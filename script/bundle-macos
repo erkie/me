@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Builds dist/Editor.app (release) with the `editor` CLI inside it.
+#
+#   script/bundle-macos             # host architecture
+#   script/bundle-macos --universal # arm64 + x86_64
+#   script/bundle-macos --install   # also copy to /Applications and link the CLI
+#
+# Signs ad hoc unless CODESIGN_IDENTITY is set (e.g. "Developer ID Application: …").
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+universal=false
+install=false
+for arg in "$@"; do
+  case "$arg" in
+    --universal) universal=true ;;
+    --install) install=true ;;
+    *) echo "unknown option: $arg" >&2; exit 2 ;;
+  esac
+done
+
+version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+build=$(git rev-list --count HEAD 2>/dev/null || echo 1)
+
+if $universal; then
+  rustup target add aarch64-apple-darwin x86_64-apple-darwin >/dev/null
+  cargo build --release -p editor-app -p editor-cli --target aarch64-apple-darwin
+  cargo build --release -p editor-app -p editor-cli --target x86_64-apple-darwin
+  mkdir -p target/universal
+  for bin in editor-app editor; do
+    lipo -create -output "target/universal/$bin" \
+      "target/aarch64-apple-darwin/release/$bin" "target/x86_64-apple-darwin/release/$bin"
+  done
+  out=target/universal
+else
+  cargo build --release -p editor-app -p editor-cli
+  out=target/release
+fi
+
+app=dist/Editor.app
+rm -rf "$app"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/bin"
+cp "$out/editor-app" "$app/Contents/MacOS/Editor"
+cp "$out/editor" "$app/Contents/Resources/bin/editor"
+sed -e "s/@VERSION@/$version/" -e "s/@BUILD@/$build/" packaging/macos/Info.plist > "$app/Contents/Info.plist"
+script/make-icns assets/logo/app-icon-1024.png "$app/Contents/Resources/AppIcon.icns"
+
+codesign --force --options runtime --sign "${CODESIGN_IDENTITY:--}" "$app/Contents/Resources/bin/editor"
+codesign --force --options runtime --sign "${CODESIGN_IDENTITY:--}" "$app"
+echo "Built $app ($version, build $build)"
+
+if $install; then
+  rm -rf /Applications/Editor.app
+  cp -R "$app" /Applications/
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /Applications/Editor.app
+  if ln -sf /Applications/Editor.app/Contents/Resources/bin/editor /usr/local/bin/editor 2>/dev/null; then
+    echo "Linked /usr/local/bin/editor"
+  else
+    echo "Run: sudo ln -sf /Applications/Editor.app/Contents/Resources/bin/editor /usr/local/bin/editor"
+  fi
+fi

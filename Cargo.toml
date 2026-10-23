@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["crates/text", "crates/project", "crates/ipc", "crates/cli", "crates/syntax"]
-default-members = ["crates/text", "crates/project", "crates/ipc", "crates/cli", "crates/syntax"]
+members = ["crates/text", "crates/project", "crates/ipc", "crates/cli", "crates/syntax", "crates/app"]
+default-members = ["crates/text", "crates/project", "crates/ipc", "crates/cli", "crates/syntax", "crates/app"]
 
 [workspace.package]
 version = "0.1.0"

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Re-renders the PNG icons from the SVG sources. Needs rsvg-convert
+# (macOS: brew install librsvg; Debian/Ubuntu: apt install librsvg2-bin).
+set -euo pipefail
+cd "$(dirname "$0")/../assets/logo"
+rsvg-convert -w 1024 -h 1024 app-icon.svg -o app-icon-1024.png
+rsvg-convert -w 512 -h 512 app-icon.svg -o app-icon-512.png
+rsvg-convert -w 256 -h 256 app-icon.svg -o app-icon-256.png
+echo "Rendered icons in assets/logo"

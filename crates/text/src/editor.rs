@@ -129,6 +129,35 @@ impl EditorState {
         self.commit(changes, after, kind);
     }
 
+    /// Replaces each of `ranges` (one per selection, e.g. IME marked text)
+    /// with `text`, leaving a cursor after each. Returns the inserted ranges.
+    pub fn replace_ranges(
+        &mut self,
+        ranges: &[Range<usize>],
+        text: &str,
+        kind: EditKind,
+    ) -> Vec<Range<usize>> {
+        let len = self.doc.len_chars();
+        let changes = ChangeSet::new(
+            ranges
+                .iter()
+                .map(|r| Change::new(r.start.min(len), r.end.min(len), text))
+                .collect(),
+        );
+        let text_len = text.chars().count();
+        let inserted: Vec<Range<usize>> = ranges
+            .iter()
+            .map(|r| {
+                let end = changes.map_pos(r.end.min(len), Assoc::After);
+                end.saturating_sub(text_len)..end
+            })
+            .collect();
+        let after = cursors(inserted.iter().map(|r| r.end), self.selections.primary_index());
+        self.occurrence_word = None;
+        self.commit(changes, after, kind);
+        inserted
+    }
+
     // ---------------------------------------------------------------------
     // Typing and deleting
     // ---------------------------------------------------------------------

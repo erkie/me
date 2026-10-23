@@ -138,6 +138,14 @@ fn cmd_d_expands_word_then_adds_whole_word_occurrences() {
 }
 
 #[test]
+fn cmd_d_on_punctuation() {
+    let mut s = state("|//! a\n//! b\nx");
+    s.add_next_occurrence();
+    s.add_next_occurrence();
+    assert_eq!(render(&s), "[//!] a\n[//!] b\nx");
+}
+
+#[test]
 fn cmd_d_on_manual_selection_matches_substrings() {
     let mut s = state("[foo] food");
     assert!(s.add_next_occurrence());

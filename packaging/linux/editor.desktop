@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Editor
+GenericName=Text Editor
+Comment=A fast, native editor for reading markdown and code
+Exec=editor-app %F
+Icon=editor
+Terminal=false
+Categories=Development;TextEditor;Utility;
+StartupWMClass=editor
+MimeType=text/plain;text/markdown;text/x-markdown;text/x-rust;text/x-python;text/x-csrc;text/x-chdr;text/x-c++src;text/x-go;text/javascript;application/json;application/x-yaml;application/toml;application/x-shellscript;inode/directory;

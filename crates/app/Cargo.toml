@@ -1,0 +1,50 @@
+[package]
+name = "editor-app"
+description = "The editor's GUI: GPUI windows, file tree, tabs, editor, markdown preview, finder and search."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+default-run = "editor-app"
+
+[[bin]]
+name = "editor-app"
+path = "src/main.rs"
+
+[dependencies]
+editor-ipc.workspace = true
+editor-project.workspace = true
+editor-syntax.workspace = true
+editor-text.workspace = true
+
+gpui.workspace = true
+gpui_platform.workspace = true
+gpui-component = { workspace = true, features = [
+    "tree-sitter-bash",
+    "tree-sitter-c",
+    "tree-sitter-cpp",
+    "tree-sitter-css",
+    "tree-sitter-go",
+    "tree-sitter-html",
+    "tree-sitter-java",
+    "tree-sitter-javascript",
+    "tree-sitter-lua",
+    "tree-sitter-markdown-inline",
+    "tree-sitter-python",
+    "tree-sitter-ruby",
+    "tree-sitter-rust",
+    "tree-sitter-swift",
+    "tree-sitter-toml",
+    "tree-sitter-typescript",
+    "tree-sitter-yaml",
+] }
+gpui-kit-assets = "=0.8.0"
+
+anyhow.workspace = true
+parking_lot.workspace = true
+tempfile.workspace = true
+futures = "0.3"
+serde.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"

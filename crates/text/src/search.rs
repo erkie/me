@@ -57,7 +57,19 @@ impl Matcher {
             regex_syntax::escape(&query.pattern)
         };
         if query.whole_word {
-            pattern = format!(r"\b(?:{pattern})\b");
+            // A word boundary only makes sense next to a word character: a
+            // literal like `//!` or `->` would never match with `\b` around it.
+            let is_word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+            let (before, after) = if query.regex {
+                (true, true)
+            } else {
+                (is_word(query.pattern.chars().next()), is_word(query.pattern.chars().last()))
+            };
+            pattern = format!(
+                "{}(?:{pattern}){}",
+                if before { r"\b" } else { "" },
+                if after { r"\b" } else { "" }
+            );
         }
         let regex = Regex::builder()
             .syntax(
@@ -185,6 +197,15 @@ mod tests {
         assert_eq!(m.find_all(&rope, 0..rope.len_chars(), 100), vec![4..7, 14..17, 19..22]);
         let m = SearchQuery::literal("foo").case_sensitive(false).whole_word(true).compile().unwrap();
         assert_eq!(m.find_all(&rope, 0..rope.len_chars(), 100).len(), 4);
+    }
+
+    #[test]
+    fn whole_word_with_punctuation_needles() {
+        let rope = Rope::from_str("//! a\n//!\nx//!y -> b->c");
+        let m = SearchQuery::literal("//!").whole_word(true).compile().unwrap();
+        assert_eq!(m.find_all(&rope, 0..rope.len_chars(), 100).len(), 3);
+        let m = SearchQuery::literal("->").whole_word(true).compile().unwrap();
+        assert_eq!(m.find_all(&rope, 0..rope.len_chars(), 100).len(), 2);
     }
 
     #[test]
