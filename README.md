@@ -14,7 +14,9 @@ code. The plan and the reasoning behind the technology choice are in
 
 ## Features
 
-- File tree sidebar (lazy, respects `.gitignore`, dims ignored files)
+- File tree sidebar (lazy, respects `.gitignore`, dims ignored files) with
+  file-type icons from the Seti theme that VS Code and Cursor use, also in
+  tabs and `⌘T`
 - Tabs: a single click opens a preview tab, editing or a double click pins it
 - Seamless markdown preview: `.md` files open rendered, and `⇧⌘V` flips to source
 - Fast syntax highlighting (tree-sitter, viewport only, 20 languages)
@@ -77,3 +79,7 @@ Linux needs the GPUI system libraries:
 | `crates/ipc` | CLI ⇄ app protocol over a Unix socket. |
 | `crates/cli` | The `editor` command (about 500 KB, no GUI dependencies). |
 | `crates/app` | The GPUI app. |
+
+File-type icons are from [Seti UI](https://github.com/jesseweed/seti-ui)
+(MIT, see `assets/file-icons/LICENSE.md`). To refresh them, run
+`script/gen-file-icons <seti-ui checkout>`.

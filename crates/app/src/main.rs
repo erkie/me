@@ -4,6 +4,7 @@ mod actions;
 mod app_state;
 mod assets;
 mod editor;
+mod file_icons;
 mod file_tree;
 mod find_bar;
 mod finder;

@@ -15,7 +15,7 @@ use gpui::{
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 
-use crate::theme;
+use crate::{file_icons, theme};
 
 const MAX_RESULTS: usize = 200;
 const ROW_HEIGHT: f32 = 44.;
@@ -299,30 +299,46 @@ fn render_result(
         dir.to_string()
     }))
     .with_highlights(to_byte_ranges(dir, 0));
+    let icon = file_icons::for_name(name, palette.is_dark);
     let row = div()
         .w_full()
         .h(px(ROW_HEIGHT))
         .px(px(10.))
         .flex()
-        .flex_col()
-        .justify_center()
+        .items_center()
+        .gap(px(10.))
         .rounded(px(7.))
         .when(selected, |el| el.bg(palette.row_selected))
         .when(!selected, |el| el.hover(|s| s.bg(palette.hover)))
         .child(
-            div()
-                .text_size(px(13.))
-                .text_color(palette.text)
-                .child(name_text),
+            svg()
+                .path(icon.path)
+                .size(px(28.))
+                .mx(px(-4.))
+                .flex_none()
+                .text_color(icon.color),
         )
         .child(
             div()
-                .text_size(px(11.))
-                .text_color(palette.text_secondary)
-                .overflow_hidden()
-                .text_ellipsis()
-                .whitespace_nowrap()
-                .child(dir_text),
+                .flex_1()
+                .min_w(px(0.))
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .text_color(palette.text)
+                        .child(name_text),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(palette.text_secondary)
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .whitespace_nowrap()
+                        .child(dir_text),
+                ),
         );
     div()
         .id(ix)

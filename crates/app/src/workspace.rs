@@ -782,8 +782,10 @@ impl Workspace {
         cx.notify();
     }
 
-    fn render_tab_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_tab_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = theme::palette(cx).clone();
+        let ui_font = gpui::font(theme::fonts(cx).ui.clone());
+        let text_system = window.text_system().clone();
         let inset = cfg!(target_os = "macos") && !(self.sidebar_visible && self.root.is_some());
         let tabs: Vec<AnyElement> = self
             .tabs
@@ -794,15 +796,32 @@ impl Workspace {
                 let active = Some(ix) == self.active;
                 let dirty = editor.is_dirty();
                 let title = editor.title();
+                let icon = editor
+                    .path()
+                    .is_some()
+                    .then(|| crate::file_icons::for_name(&title, palette.is_dark));
                 let id = tab.id;
                 let close_color = palette.text_secondary;
+                // Size the tab to its title: padding, icon, gaps and the
+                // close button take 64px, plus room for the ellipsis logic.
+                let run = gpui::TextRun {
+                    len: title.len(),
+                    font: ui_font.clone(),
+                    color: palette.text,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let text_width = text_system
+                    .shape_line(title.clone(), px(12.5), &[run], None)
+                    .width;
+                let width = (text_width + px(78.)).clamp(px(96.), px(260.));
                 div()
                     .id(("tab", id as usize))
                     .group("tab")
                     .h_full()
-                    .min_w(px(110.))
-                    .max_w(px(220.))
-                    .flex_shrink(1.)
+                    .w(width)
+                    .flex_none()
                     .px(px(10.))
                     .flex()
                     .items_center()
@@ -818,9 +837,20 @@ impl Workspace {
                             .hover(|s| s.bg(palette.hover))
                     })
                     .when(!tab.pinned, |el| el.italic())
+                    .when_some(icon, |el, icon| {
+                        el.child(
+                            svg()
+                                .path(icon.path)
+                                .size(px(22.))
+                                .mx(px(-3.))
+                                .flex_none()
+                                .text_color(icon.color),
+                        )
+                    })
                     .child(
                         div()
                             .flex_1()
+                            .min_w(px(0.))
                             .overflow_hidden()
                             .text_ellipsis()
                             .whitespace_nowrap()
@@ -1111,7 +1141,7 @@ fn sidebar_button(
 }
 
 impl Render for Workspace {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::trace_first_frame();
         let palette = theme::palette(cx).clone();
         let show_sidebar = self.sidebar_visible && self.root.is_some();
@@ -1285,7 +1315,7 @@ impl Render for Workspace {
                     .flex()
                     .flex_col()
                     .bg(palette.editor_bg)
-                    .child(self.render_tab_bar(cx))
+                    .child(self.render_tab_bar(window, cx))
                     .when(self.find_bar_open, |el| el.child(self.find_bar.clone()))
                     .child(div().flex_1().min_h(px(0.)).child(content))
                     .child(self.render_status_bar(cx)),

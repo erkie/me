@@ -11,7 +11,7 @@ use gpui::{
     uniform_list,
 };
 
-use crate::theme;
+use crate::{file_icons, theme};
 
 actions!(
     file_tree,
@@ -275,24 +275,23 @@ fn render_row(
     } else {
         palette.text
     };
-    let icon_color = if entry.ignored {
-        palette.ignored_text
-    } else {
-        palette.text_secondary
-    };
     let chevron = if expanded {
         "icons/chevron-down.svg"
     } else {
         "icons/chevron-right.svg"
     };
-    let icon = if entry.is_dir {
-        if expanded {
-            "icons/folder-open.svg"
-        } else {
-            "icons/folder.svg"
-        }
+    // Folders get a disclosure chevron, files their type icon in the same
+    // column (the Seti layout VS Code and Cursor use).
+    let (icon_path, icon_color, icon_size): (SharedString, _, f32) = if entry.is_dir {
+        (chevron.into(), palette.text_tertiary, 11.)
     } else {
-        file_icon(&entry.name)
+        let icon = file_icons::for_name(&entry.name, palette.is_dark);
+        let color = if entry.ignored {
+            icon.color.opacity(0.5)
+        } else {
+            icon.color
+        };
+        (icon.path, color, 24.)
     };
     let name: SharedString = entry.name.clone().into();
     let row_el = div()
@@ -302,7 +301,7 @@ fn render_row(
         .pr(px(8.))
         .flex()
         .items_center()
-        .gap(px(4.))
+        .gap(px(5.))
         .rounded(px(5.))
         .text_size(px(13.))
         .text_color(text_color)
@@ -314,20 +313,20 @@ fn render_row(
             })
         })
         .when(!selected, |el| el.hover(|s| s.bg(palette.hover)))
-        .child(div().w(px(12.)).flex_none().when(entry.is_dir, |el| {
-            el.child(
-                svg()
-                    .path(chevron)
-                    .size(px(11.))
-                    .text_color(palette.text_tertiary),
-            )
-        }))
         .child(
-            svg()
-                .path(icon)
-                .size(px(14.))
+            div()
+                .w(px(18.))
                 .flex_none()
-                .text_color(icon_color),
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    svg()
+                        .path(icon_path)
+                        .size(px(icon_size))
+                        .flex_none()
+                        .text_color(icon_color),
+                ),
         )
         .child(
             div()
@@ -346,13 +345,4 @@ fn render_row(
             this.click(ix, event, window, cx)
         }))
         .into_any_element()
-}
-
-fn file_icon(name: &str) -> &'static str {
-    let lower = name.to_ascii_lowercase();
-    if lower.ends_with(".md") || lower.ends_with(".markdown") || lower.ends_with(".txt") {
-        "icons/file-text.svg"
-    } else {
-        "icons/file.svg"
-    }
 }
