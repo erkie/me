@@ -1,0 +1,35 @@
+[package]
+name = "editor-syntax"
+description = "Syntax highlighting with tree-sitter: lazy grammars, incremental parsing, viewport-only highlighting."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+editor-text.workspace = true
+ropey.workspace = true
+streaming-iterator = "0.1"
+tree-sitter.workspace = true
+
+# Grammar versions match gpui-component's so both share one build.
+tree-sitter-bash = "0.23.3"
+tree-sitter-c = "0.24.1"
+tree-sitter-cpp = "0.23.4"
+tree-sitter-css = "0.23.2"
+tree-sitter-diff = "0.1.0"
+tree-sitter-go = "0.23.4"
+tree-sitter-html = "0.23.2"
+tree-sitter-java = "0.23.5"
+tree-sitter-javascript = "0.23.1"
+tree-sitter-json = "0.24.8"
+tree-sitter-lua = "0.4.1"
+tree-sitter-make = "1.1.1"
+tree-sitter-md = "0.5.1"
+tree-sitter-python = "0.23.6"
+tree-sitter-ruby = "0.23.1"
+tree-sitter-rust = "0.24.0"
+tree-sitter-swift = "0.7.0"
+tree-sitter-toml-ng = "0.7.0"
+tree-sitter-typescript = "0.23.2"
+tree-sitter-yaml = "0.7.1"

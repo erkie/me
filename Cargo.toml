@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["crates/text", "crates/project", "crates/ipc", "crates/cli"]
-default-members = ["crates/text", "crates/project", "crates/ipc", "crates/cli"]
+members = ["crates/text", "crates/project", "crates/ipc", "crates/cli", "crates/syntax"]
+default-members = ["crates/text", "crates/project", "crates/ipc", "crates/cli", "crates/syntax"]
 
 [workspace.package]
 version = "0.1.0"
@@ -41,7 +41,7 @@ tempfile = "3"
 unicode-segmentation = "1.12"
 unicode-width = "0.2"
 
-tree-sitter = "0.26"
+tree-sitter = "0.26.13"
 tree-sitter-language = "0.1"
 
 [profile.dev]
