@@ -16,6 +16,7 @@ use crate::editor::{EditorEvent, EditorView};
 use crate::file_tree::{FileTree, FileTreeEvent};
 use crate::find_bar::{FindBar, FindBarEvent};
 use crate::finder::{FinderEvent, FinderView};
+use crate::goto_line::{GoToLineEvent, GoToLinePrompt};
 use crate::markdown::{MarkdownEvent, MarkdownPreview, is_markdown};
 use crate::search_panel::{SearchPanel, SearchPanelEvent};
 use crate::theme;
@@ -72,6 +73,8 @@ pub struct Workspace {
     resizing_sidebar: bool,
     find_bar: Entity<FindBar>,
     find_bar_open: bool,
+    go_to_line: Entity<GoToLinePrompt>,
+    go_to_line_open: bool,
     tabs: Vec<Tab>,
     active: Option<usize>,
     closed: Vec<PathBuf>,
@@ -91,7 +94,24 @@ impl Focusable for Workspace {
 impl Workspace {
     pub fn new(root: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let find_bar = cx.new(|cx| FindBar::new(window, cx));
-        let mut subscriptions = vec![cx.subscribe_in(&find_bar, window, Self::on_find_bar_event)];
+        let go_to_line = cx.new(|cx| GoToLinePrompt::new(window, cx));
+        let mut subscriptions = vec![
+            cx.subscribe_in(&find_bar, window, Self::on_find_bar_event),
+            cx.subscribe_in(
+                &go_to_line,
+                window,
+                |this, _, event: &GoToLineEvent, window, cx| {
+                    this.go_to_line_open = false;
+                    if let GoToLineEvent::Go { line, column } = event
+                        && let Some(editor) = this.active_editor()
+                    {
+                        editor.update(cx, |e, cx| e.go_to(*line, *column, cx));
+                    }
+                    this.focus_active(window, cx);
+                    cx.notify();
+                },
+            ),
+        ];
         subscriptions.push(cx.observe_window_appearance(window, |_, window, cx| {
             theme::apply(window.appearance(), cx);
         }));
@@ -113,6 +133,8 @@ impl Workspace {
             resizing_sidebar: false,
             find_bar,
             find_bar_open: false,
+            go_to_line,
+            go_to_line_open: false,
             tabs: Vec::new(),
             active: None,
             closed: Vec::new(),
@@ -728,6 +750,25 @@ impl Workspace {
             .child(div().flex_1().min_h(px(0.)).child(content))
     }
 
+    fn show_go_to_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.active_tab() else { return };
+        if tab.show_preview && tab.preview.is_some() {
+            self.toggle_preview(window, cx);
+        }
+        let Some(editor) = self.active_editor() else {
+            return;
+        };
+        let (current, total) = {
+            let e = editor.read(cx);
+            let head = e.state.selections().primary().head;
+            (e.state.doc.char_to_line(head) + 1, e.state.doc.len_lines())
+        };
+        self.go_to_line_open = true;
+        self.go_to_line
+            .update(cx, |g, cx| g.show(current, total, window, cx));
+        cx.notify();
+    }
+
     fn show_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(search) = self.search_panel.clone() else {
             return;
@@ -1106,6 +1147,9 @@ impl Render for Workspace {
                 cx.notify();
             }))
             .on_action(
+                cx.listener(|this, _: &GoToLine, window, cx| this.show_go_to_line(window, cx)),
+            )
+            .on_action(
                 cx.listener(|this, _: &ToggleProjectSearch, window, cx| {
                     this.show_search(window, cx)
                 }),
@@ -1246,6 +1290,18 @@ impl Render for Workspace {
                     .child(div().flex_1().min_h(px(0.)).child(content))
                     .child(self.render_status_bar(cx)),
             )
+            .when(self.go_to_line_open, |el| {
+                el.child(
+                    div()
+                        .absolute()
+                        .top(px(TITLE_BAR_HEIGHT + 8.))
+                        .left_0()
+                        .right_0()
+                        .flex()
+                        .justify_center()
+                        .child(self.go_to_line.clone()),
+                )
+            })
             .when_some(finder, |el, finder| {
                 el.child(
                     div()

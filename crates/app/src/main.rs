@@ -7,6 +7,7 @@ mod editor;
 mod file_tree;
 mod find_bar;
 mod finder;
+mod goto_line;
 mod ipc;
 mod markdown;
 mod menus;

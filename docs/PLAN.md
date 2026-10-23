@@ -191,7 +191,7 @@ conflict. Phase 3 makes it user-configurable in `keymap.json`.
 |--------|------|
 | Go to file | `Cmd+T`, `Cmd+P` |
 | Find in file / replace | `Cmd+F` / `Cmd+Alt+F` |
-| Find next / previous | `Cmd+G` / `Cmd+Shift+G`, `Enter` / `Shift+Enter` in the find bar |
+| Find next / previous | `Cmd+G` / `Cmd+Shift+G` (`F3` / `Shift+F3` elsewhere), `Enter` / `Shift+Enter` in the find bar |
 | Find in project | `Cmd+Shift+F` |
 | **Select line** (repeat to extend) | `Cmd+L` |
 | **Split selection into lines** (cursor per line) | `Cmd+Shift+L` |
@@ -319,11 +319,13 @@ task of Phase 1.
   reload unmodified buffers, and re-render the markdown preview live while
   another program writes the file.
 * Session restore: windows, folders, tabs, cursors, scroll positions.
-* Markdown: GitHub alerts (`> [!NOTE]`), heading anchors and in-page links,
+* Markdown: keyboard scrolling in the preview (Space, Page Up/Down, arrows,
+  Home/End). Mouse and trackpad scrolling already work; a `ScrollHandle`
+  offset set from an action didn't repaint the gpui-component `TextView`, so
+  this needs a closer look. GitHub alerts (`> [!NOTE]`), heading anchors and in-page links,
   relative images, front matter as a table, footnotes, and Mermaid (maybe).
 * Editor: bracket matching, auto-closing pairs, soft wrap for prose
-  (markdown source), a go-to-line prompt (`Ctrl+G`), and smooth scrollbar
-  dragging.
+  (markdown source), and smooth scrollbar dragging.
 
 **Done when:** a week of daily use in place of Sublime with no blocker bugs,
 and cold start ≤ 100 ms.
