@@ -1,0 +1,15 @@
+[package]
+name = "editor-text"
+description = "Text model for the editor: rope document, selections, multi-cursor commands, undo history, search."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+regex-cursor.workspace = true
+regex-syntax = "0.8"
+ropey = { workspace = true }
+smallvec.workspace = true
+unicode-segmentation.workspace = true
+unicode-width.workspace = true
