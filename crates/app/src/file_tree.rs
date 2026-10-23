@@ -13,7 +13,10 @@ use gpui::{
 
 use crate::theme;
 
-actions!(file_tree, [SelectPrev, SelectNext, Expand, Collapse, OpenSelected]);
+actions!(
+    file_tree,
+    [SelectPrev, SelectNext, Expand, Collapse, OpenSelected]
+);
 
 pub const ROW_HEIGHT: f32 = 24.;
 
@@ -60,10 +63,6 @@ impl FileTree {
         this.expanded.insert(root);
         this.rebuild();
         this
-    }
-
-    pub fn root(&self) -> &Path {
-        &self.root
     }
 
     fn listing(&mut self, dir: &Path) -> Vec<DirEntry> {
@@ -139,15 +138,26 @@ impl FileTree {
         }
     }
 
-    fn click(&mut self, ix: usize, event: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(row) = self.rows.get(ix).cloned() else { return };
+    fn click(
+        &mut self,
+        ix: usize,
+        event: &ClickEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(row) = self.rows.get(ix).cloned() else {
+            return;
+        };
         window.focus(&self.focus_handle, cx);
         self.selected = Some(row.entry.path.clone());
         if row.entry.is_dir {
             self.toggle(&row.entry.path, cx);
         } else {
             let pin = event.click_count() >= 2;
-            cx.emit(FileTreeEvent::Open { path: row.entry.path, pin });
+            cx.emit(FileTreeEvent::Open {
+                path: row.entry.path,
+                pin,
+            });
         }
         cx.notify();
     }
@@ -192,7 +202,10 @@ impl FileTree {
         if row.entry.is_dir {
             self.toggle(&row.entry.path, cx);
         } else {
-            cx.emit(FileTreeEvent::Open { path: row.entry.path, pin: true });
+            cx.emit(FileTreeEvent::Open {
+                path: row.entry.path,
+                pin: true,
+            });
         }
     }
 }
@@ -257,11 +270,27 @@ fn render_row(
     cx: &mut Context<FileTree>,
 ) -> gpui::AnyElement {
     let entry = &row.entry;
-    let text_color = if entry.ignored { palette.ignored_text } else { palette.text };
-    let icon_color = if entry.ignored { palette.ignored_text } else { palette.text_secondary };
-    let chevron = if expanded { "icons/chevron-down.svg" } else { "icons/chevron-right.svg" };
+    let text_color = if entry.ignored {
+        palette.ignored_text
+    } else {
+        palette.text
+    };
+    let icon_color = if entry.ignored {
+        palette.ignored_text
+    } else {
+        palette.text_secondary
+    };
+    let chevron = if expanded {
+        "icons/chevron-down.svg"
+    } else {
+        "icons/chevron-right.svg"
+    };
     let icon = if entry.is_dir {
-        if expanded { "icons/folder-open.svg" } else { "icons/folder.svg" }
+        if expanded {
+            "icons/folder-open.svg"
+        } else {
+            "icons/folder.svg"
+        }
     } else {
         file_icon(&entry.name)
     };
@@ -278,22 +307,44 @@ fn render_row(
         .text_size(px(13.))
         .text_color(text_color)
         .when(selected, |el| {
-            el.bg(if focused { palette.row_selected } else { palette.row_selected_inactive })
+            el.bg(if focused {
+                palette.row_selected
+            } else {
+                palette.row_selected_inactive
+            })
         })
         .when(!selected, |el| el.hover(|s| s.bg(palette.hover)))
+        .child(div().w(px(12.)).flex_none().when(entry.is_dir, |el| {
+            el.child(
+                svg()
+                    .path(chevron)
+                    .size(px(11.))
+                    .text_color(palette.text_tertiary),
+            )
+        }))
         .child(
-            div().w(px(12.)).flex_none().when(entry.is_dir, |el| {
-                el.child(svg().path(chevron).size(px(11.)).text_color(palette.text_tertiary))
-            }),
+            svg()
+                .path(icon)
+                .size(px(14.))
+                .flex_none()
+                .text_color(icon_color),
         )
-        .child(svg().path(icon).size(px(14.)).flex_none().text_color(icon_color))
-        .child(div().flex_1().overflow_hidden().text_ellipsis().whitespace_nowrap().child(name));
+        .child(
+            div()
+                .flex_1()
+                .overflow_hidden()
+                .text_ellipsis()
+                .whitespace_nowrap()
+                .child(name),
+        );
     div()
         .id(ix)
         .w_full()
         .px(px(8.))
         .child(row_el)
-        .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| this.click(ix, event, window, cx)))
+        .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+            this.click(ix, event, window, cx)
+        }))
         .into_any_element()
 }
 

@@ -10,7 +10,7 @@ use crate::app_state;
 use crate::platform;
 
 pub fn init(cx: &mut App) {
-    cx.on_action(|_: &Quit, cx| cx.quit());
+    cx.on_action(|_: &Quit, cx| app_state::quit(cx));
     cx.on_action(|_: &Hide, cx| cx.hide());
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
@@ -21,12 +21,16 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &OpenFolder, cx| prompt_open(false, cx));
     cx.on_action(|_: &CloseWindow, cx| {
         if let Some(window) = cx.active_window() {
-            window.update(cx, |_, window, _| window.remove_window()).ok();
+            window
+                .update(cx, |_, window, _| window.remove_window())
+                .ok();
         }
     });
     cx.on_action(|_: &Minimize, cx| {
         if let Some(window) = cx.active_window() {
-            window.update(cx, |_, window, _| window.minimize_window()).ok();
+            window
+                .update(cx, |_, window, _| window.minimize_window())
+                .ok();
         }
     });
     cx.on_action(|_: &Zoom, cx| {
@@ -62,11 +66,17 @@ fn prompt_open(files: bool, cx: &mut App) {
         prompt: Some("Open".into()),
     });
     cx.spawn(async move |cx| {
-        let Ok(Ok(Some(paths))) = rx.await else { return };
+        let Ok(Ok(Some(paths))) = rx.await else {
+            return;
+        };
         cx.update(|cx| {
             let paths: Vec<OpenPath> = paths
                 .into_iter()
-                .map(|path: PathBuf| OpenPath { path, line: None, column: None })
+                .map(|path: PathBuf| OpenPath {
+                    path,
+                    line: None,
+                    column: None,
+                })
                 .collect();
             app_state::open(paths, None, false, cx);
         });

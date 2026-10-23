@@ -13,7 +13,7 @@ use gpui::{
     point, px, relative, size,
 };
 
-use super::{Autoscroll, EditorView};
+use super::{Autoscroll, EditorView, ScrollPosition};
 use crate::theme::{self, Palette};
 
 pub const FONT_SIZE: f32 = 13.;
@@ -35,7 +35,7 @@ pub struct LayoutSnapshot {
     pub text_left: Pixels,
     pub line_height: Pixels,
     pub char_width: Pixels,
-    pub scroll: Point<Pixels>,
+    pub scroll: ScrollPosition,
     pub tab_width: usize,
     pub lines: Vec<VisibleLine>,
 }
@@ -58,16 +58,24 @@ pub struct Hit {
 impl LayoutSnapshot {
     pub fn hit(&self, p: Point<Pixels>, state: &EditorState) -> Hit {
         let doc = &state.doc;
-        let y = p.y - self.bounds.top() + self.scroll.y;
+        let y = f32::from(p.y - self.bounds.top()) as f64 + self.scroll.y;
         let last_line = doc.len_lines().saturating_sub(1);
-        let line = if y < px(0.) { 0 } else { ((y / self.line_height) as usize).min(last_line) };
+        let line = if y < 0. {
+            0
+        } else {
+            ((y / f32::from(self.line_height) as f64) as usize).min(last_line)
+        };
         let x = (p.x - self.text_left + self.scroll.x).max(px(0.));
         let visual_col = (x / self.char_width).round().max(0.) as usize;
         let col = match self.lines.iter().find(|l| l.line == line) {
             Some(vl) if !vl.char_x.is_empty() => vl.start_col + nearest(&vl.char_x, x),
             _ => char_col_at_visual(doc.line(line), visual_col, self.tab_width).0,
         };
-        Hit { pos: doc.line_start(line) + col.min(doc.line_len(line)), line, visual_col }
+        Hit {
+            pos: doc.line_start(line) + col.min(doc.line_len(line)),
+            line,
+            visual_col,
+        }
     }
 
     pub fn point_for_pos(&self, pos: usize, state: &EditorState) -> Option<Point<Pixels>> {
@@ -76,7 +84,8 @@ impl LayoutSnapshot {
         let x = *vl.char_x.get(col.checked_sub(vl.start_col)?)?;
         Some(point(
             self.text_left + x - self.scroll.x,
-            self.bounds.top() + self.line_height * line as f32 - self.scroll.y,
+            self.bounds.top()
+                + px((line as f64 * f32::from(self.line_height) as f64 - self.scroll.y) as f32),
         ))
     }
 }
@@ -89,7 +98,11 @@ fn nearest(xs: &[Pixels], x: Pixels) -> usize {
     if ix >= xs.len() {
         return xs.len() - 1;
     }
-    if (xs[ix] - x) < (x - xs[ix - 1]) { ix } else { ix - 1 }
+    if (xs[ix] - x) < (x - xs[ix - 1]) {
+        ix
+    } else {
+        ix - 1
+    }
 }
 
 pub struct EditorElement {
@@ -162,8 +175,10 @@ impl Element for EditorElement {
         let line_height = px(LINE_HEIGHT);
         let text_system = window.text_system().clone();
         let font_id = text_system.resolve_font(&mono);
-        let char_width =
-            text_system.advance(font_id, font_size, 'm').map(|s| s.width).unwrap_or(px(7.8));
+        let char_width = text_system
+            .advance(font_id, font_size, 'm')
+            .map(|s| s.width)
+            .unwrap_or(px(7.8));
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
 
         // Scroll bookkeeping needs the view mutably; do it first.
@@ -172,18 +187,20 @@ impl Element for EditorElement {
         let gutter_width = char_width * digits as f32 + px(GUTTER_PAD_LEFT + GUTTER_PAD_RIGHT);
         let text_left = bounds.left() + gutter_width + px(TEXT_PAD_LEFT);
         let text_width = (bounds.size.width - gutter_width - px(TEXT_PAD_LEFT)).max(px(0.));
-        let total_height = line_height * len_lines as f32;
-        let max_scroll_y = (total_height - bounds.size.height * 0.5).max(px(0.));
+        // Vertical math in f64 (see `ScrollPosition`).
+        let lh = f32::from(line_height) as f64;
+        let height = f32::from(bounds.size.height) as f64;
+        let total_height = lh * len_lines as f64;
+        let max_scroll_y = (total_height - height * 0.5).max(0.);
         self.view.update(cx, |view, _| {
             if let Some(mode) = view.autoscroll.take() {
                 let state = &view.state;
                 let head = state.selections().primary().head;
                 let (line, col) = state.doc.line_col(head);
                 let vcol = visual_col(state.doc.line(line), col, state.tab_width);
-                let y = line_height * line as f32;
+                let y = lh * line as f64;
                 let x = char_width * vcol as f32;
-                let margin = line_height * 3.;
-                let height = bounds.size.height;
+                let margin = lh * 3.;
                 match mode {
                     Autoscroll::Center => {
                         view.scroll.y = y - height * 0.4;
@@ -191,8 +208,8 @@ impl Element for EditorElement {
                     Autoscroll::Fit => {
                         if y < view.scroll.y + margin {
                             view.scroll.y = y - margin;
-                        } else if y + line_height > view.scroll.y + height - margin {
-                            view.scroll.y = y + line_height - height + margin;
+                        } else if y + lh > view.scroll.y + height - margin {
+                            view.scroll.y = y + lh - height + margin;
                         }
                     }
                 }
@@ -202,7 +219,7 @@ impl Element for EditorElement {
                     view.scroll.x = x - text_width + char_width * 8.;
                 }
             }
-            view.scroll.y = view.scroll.y.clamp(px(0.), max_scroll_y);
+            view.scroll.y = view.scroll.y.clamp(0., max_scroll_y);
             view.scroll.x = view.scroll.x.max(px(0.));
         });
 
@@ -213,19 +230,31 @@ impl Element for EditorElement {
         let scroll = view.scroll;
         let tab_width = state.tab_width;
 
-        let first_line = ((scroll.y / line_height) as usize).min(len_lines.saturating_sub(1));
+        let first_line = ((scroll.y / lh) as usize).min(len_lines.saturating_sub(1));
         let visible_count = (bounds.size.height / line_height).ceil() as usize + 1;
         let last_line = (first_line + visible_count).min(len_lines);
-        let line_top = |line: usize| bounds.top() + line_height * line as f32 - scroll.y;
+        // Lines are placed relative to the first visible one, so positions
+        // stay exact however far down the file is scrolled.
+        let first_offset = (scroll.y - first_line as f64 * lh) as f32;
+        let line_top = |line: usize| {
+            bounds.top() + line_height * (line as f32 - first_line as f32) - px(first_offset)
+        };
         let first_visible_col = (scroll.x / char_width) as usize;
         let visible_cols = (text_width / char_width) as usize + 2;
 
         // Syntax spans for the visible bytes only.
         let rope = doc.rope();
         let start_byte = rope.line_to_byte(first_line);
-        let end_byte = if last_line >= len_lines { rope.len_bytes() } else { rope.line_to_byte(last_line) };
+        let end_byte = if last_line >= len_lines {
+            rope.len_bytes()
+        } else {
+            rope.line_to_byte(last_line)
+        };
         let end_byte = end_byte.min(start_byte + MAX_HIGHLIGHT_BYTES);
-        let spans = view.syntax().map(|s| s.highlight(rope, start_byte..end_byte)).unwrap_or_default();
+        let spans = view
+            .syntax()
+            .map(|s| s.highlight(rope, start_byte..end_byte))
+            .unwrap_or_default();
 
         let mut lines = Vec::with_capacity(last_line - first_line);
         let mut visible = Vec::with_capacity(last_line - first_line);
@@ -272,13 +301,23 @@ impl Element for EditorElement {
                 byte += ch.len_utf8();
             }
             boundaries.push(display.len());
-            let shaped = text_system.shape_line(SharedString::from(display), font_size, &runs, None);
+            let shaped =
+                text_system.shape_line(SharedString::from(display), font_size, &runs, None);
             let offset_x = char_width * start_col as f32;
-            let char_x: Vec<Pixels> =
-                boundaries.iter().map(|b| offset_x + shaped.x_for_index(*b)).collect();
+            let char_x: Vec<Pixels> = boundaries
+                .iter()
+                .map(|b| offset_x + shaped.x_for_index(*b))
+                .collect();
             max_width = max_width.max(offset_x + shaped.width);
-            lines.push((point(text_left - scroll.x + offset_x, line_top(line)), shaped));
-            visible.push(VisibleLine { line, start_col, char_x });
+            lines.push((
+                point(text_left - scroll.x + offset_x, line_top(line)),
+                shaped,
+            ));
+            visible.push(VisibleLine {
+                line,
+                start_col,
+                char_x,
+            });
         }
 
         let x_at = |line: usize, col: usize| -> Pixels {
@@ -300,7 +339,10 @@ impl Element for EditorElement {
                 let line = doc.char_to_line(sel.head);
                 if (first_line..last_line).contains(&line) {
                     backgrounds.push(fill(
-                        Bounds::new(point(bounds.left(), line_top(line)), size(full_width, line_height)),
+                        Bounds::new(
+                            point(bounds.left(), line_top(line)),
+                            size(full_width, line_height),
+                        ),
                         palette.current_line,
                     ));
                 }
@@ -315,12 +357,40 @@ impl Element for EditorElement {
                 } else {
                     palette.find_match
                 };
-                push_range_quads(&mut backgrounds, doc, m.clone(), first_line, last_line, &x_at, &to_window, line_height, char_width, color, false);
+                push_range_quads(
+                    &mut backgrounds,
+                    doc,
+                    m.clone(),
+                    first_line,
+                    last_line,
+                    &x_at,
+                    &to_window,
+                    line_height,
+                    char_width,
+                    color,
+                    false,
+                );
             }
         }
-        let selection_color = if focused { palette.selection } else { palette.selection_inactive };
+        let selection_color = if focused {
+            palette.selection
+        } else {
+            palette.selection_inactive
+        };
         for sel in state.selections().iter().filter(|s| !s.is_empty()) {
-            push_range_quads(&mut backgrounds, doc, sel.range(), first_line, last_line, &x_at, &to_window, line_height, char_width, selection_color, true);
+            push_range_quads(
+                &mut backgrounds,
+                doc,
+                sel.range(),
+                first_line,
+                last_line,
+                &x_at,
+                &to_window,
+                line_height,
+                char_width,
+                selection_color,
+                true,
+            );
         }
 
         // Cursors.
@@ -331,7 +401,10 @@ impl Element for EditorElement {
                 if (first_line..last_line).contains(&line) {
                     let p = to_window(x_at(line, col), line);
                     cursors.push(fill(
-                        Bounds::new(point(p.x - px(0.5), p.y + px(1.)), size(px(2.), line_height - px(2.))),
+                        Bounds::new(
+                            point(p.x - px(0.5), p.y + px(1.)),
+                            size(px(2.), line_height - px(2.)),
+                        ),
                         palette.cursor,
                     ));
                 }
@@ -339,7 +412,11 @@ impl Element for EditorElement {
         }
 
         // Gutter numbers; the cursor lines are brighter.
-        let cursor_lines: Vec<usize> = state.selections().iter().map(|s| doc.char_to_line(s.head)).collect();
+        let cursor_lines: Vec<usize> = state
+            .selections()
+            .iter()
+            .map(|s| doc.char_to_line(s.head))
+            .collect();
         let mut gutter = Vec::with_capacity(last_line - first_line);
         for line in first_line..last_line {
             let color = if cursor_lines.binary_search(&line).is_ok() {
@@ -348,30 +425,44 @@ impl Element for EditorElement {
                 palette.gutter_text
             };
             let label: SharedString = (line + 1).to_string().into();
-            let run = TextRun { len: label.len(), font: mono.clone(), color, background_color: None, underline: None, strikethrough: None };
+            let run = TextRun {
+                len: label.len(),
+                font: mono.clone(),
+                color,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
             let shaped = text_system.shape_line(label, font_size, &[run], None);
             let x = bounds.left() + gutter_width - px(GUTTER_PAD_RIGHT) - shaped.width;
             gutter.push((point(x, line_top(line)), shaped));
         }
 
         // Overlay scrollbar while scrolling, like macOS.
-        let scrollbar = view.scrolled_at.filter(|t| t.elapsed() < SCROLLBAR_VISIBLE_FOR).and_then(|_| {
-            let content = total_height + bounds.size.height * 0.5;
-            if content <= bounds.size.height {
-                return None;
-            }
-            let track = bounds.size.height - px(4.);
-            let thumb = (track * (bounds.size.height / content)).max(px(24.));
-            let ratio = if max_scroll_y > px(0.) { scroll.y / max_scroll_y } else { 0. };
-            let y = bounds.top() + px(2.) + (track - thumb) * ratio;
-            Some(
-                fill(
-                    Bounds::new(point(bounds.right() - px(9.), y), size(px(6.), thumb)),
-                    palette.text_tertiary.opacity(0.6),
+        let scrollbar = view
+            .scrolled_at
+            .filter(|t| t.elapsed() < SCROLLBAR_VISIBLE_FOR)
+            .and_then(|_| {
+                let content = total_height + height * 0.5;
+                if content <= height {
+                    return None;
+                }
+                let track = bounds.size.height - px(4.);
+                let thumb = (track * (height / content) as f32).max(px(24.));
+                let ratio = if max_scroll_y > 0. {
+                    (scroll.y / max_scroll_y) as f32
+                } else {
+                    0.
+                };
+                let y = bounds.top() + px(2.) + (track - thumb) * ratio;
+                Some(
+                    fill(
+                        Bounds::new(point(bounds.right() - px(9.), y), size(px(6.), thumb)),
+                        palette.text_tertiary.opacity(0.6),
+                    )
+                    .corner_radii(px(3.)),
                 )
-                .corner_radii(px(3.)),
-            )
-        });
+            });
 
         let notice = view.notice.clone().map(|text| {
             let run = TextRun {
@@ -430,7 +521,11 @@ impl Element for EditorElement {
     ) {
         let palette: Palette = theme::palette(cx).clone();
         let focus_handle = self.view.read(cx).focus_handle.clone();
-        window.handle_input(&focus_handle, ElementInputHandler::new(bounds, self.view.clone()), cx);
+        window.handle_input(
+            &focus_handle,
+            ElementInputHandler::new(bounds, self.view.clone()),
+            cx,
+        );
         window.set_cursor_style(CursorStyle::IBeam, &prepaint.hitbox);
         self.register_mouse_listeners(&prepaint.hitbox, window);
 
@@ -439,17 +534,22 @@ impl Element for EditorElement {
         let backgrounds = std::mem::take(&mut prepaint.backgrounds);
         let lines = std::mem::take(&mut prepaint.lines);
         let cursors = std::mem::take(&mut prepaint.cursors);
-        window.with_content_mask(Some(ContentMask { bounds: prepaint.text_bounds }), |window| {
-            for quad in backgrounds {
-                window.paint_quad(quad);
-            }
-            for (origin, line) in &lines {
-                let _ = line.paint(*origin, line_height, TextAlign::Left, None, window, cx);
-            }
-            for cursor in cursors {
-                window.paint_quad(cursor);
-            }
-        });
+        window.with_content_mask(
+            Some(ContentMask {
+                bounds: prepaint.text_bounds,
+            }),
+            |window| {
+                for quad in backgrounds {
+                    window.paint_quad(quad);
+                }
+                for (origin, line) in &lines {
+                    let _ = line.paint(*origin, line_height, TextAlign::Left, None, window, cx);
+                }
+                for cursor in cursors {
+                    window.paint_quad(cursor);
+                }
+            },
+        );
         for (origin, line) in &prepaint.gutter {
             let _ = line.paint(*origin, line_height, TextAlign::Left, None, window, cx);
         }
@@ -467,11 +567,20 @@ impl EditorElement {
         let view = self.view.clone();
         let hb = hitbox.clone();
         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
-            if phase != DispatchPhase::Bubble || event.button != MouseButton::Left || !hb.is_hovered(window) {
+            if phase != DispatchPhase::Bubble
+                || event.button != MouseButton::Left
+                || !hb.is_hovered(window)
+            {
                 return;
             }
             view.update(cx, |view, cx| {
-                view.mouse_down(event.position, event.click_count, event.modifiers, window, cx)
+                view.mouse_down(
+                    event.position,
+                    event.click_count,
+                    event.modifiers,
+                    window,
+                    cx,
+                )
             });
             cx.stop_propagation();
         });
@@ -550,7 +659,11 @@ fn push_range_quads(
     let (end_line, end_col) = doc.line_col(range.end);
     for line in start_line.max(first_line)..=end_line.min(last_line.saturating_sub(1)) {
         let from = if line == start_line { start_col } else { 0 };
-        let to = if line == end_line { end_col } else { doc.line_len(line) };
+        let to = if line == end_line {
+            end_col
+        } else {
+            doc.line_len(line)
+        };
         let x1 = x_at(line, from);
         let mut x2 = x_at(line, to);
         if show_newlines && line < end_line {

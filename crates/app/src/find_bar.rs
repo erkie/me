@@ -2,10 +2,9 @@
 
 use editor_text::SearchQuery;
 use gpui::{
-    AppContext,
-    App, ClickEvent, Context, Entity, EventEmitter, InteractiveElement, IntoElement, KeyDownEvent,
-    ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Subscription, Window,
-    div, prelude::FluentBuilder, px,
+    App, AppContext, ClickEvent, Context, Entity, EventEmitter, InteractiveElement, IntoElement,
+    KeyDownEvent, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
+    Subscription, Window, div, prelude::FluentBuilder, px,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 
@@ -38,12 +37,22 @@ impl FindBar {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Find"));
         let replace = cx.new(|cx| InputState::new(window, cx).placeholder("Replace"));
-        let subscriptions = vec![cx.subscribe_in(&input, window, |this, _, event: &InputEvent, _, cx| {
-            if matches!(event, InputEvent::Change) {
-                this.emit_query(cx);
-            }
-        })];
-        Self { input, replace, case_sensitive: false, whole_word: false, regex: false, _subscriptions: subscriptions }
+        let subscriptions =
+            vec![
+                cx.subscribe_in(&input, window, |this, _, event: &InputEvent, _, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        this.emit_query(cx);
+                    }
+                }),
+            ];
+        Self {
+            input,
+            replace,
+            case_sensitive: false,
+            whole_word: false,
+            regex: false,
+            _subscriptions: subscriptions,
+        }
     }
 
     pub fn query(&self, cx: &App) -> Option<SearchQuery> {
@@ -67,7 +76,8 @@ impl FindBar {
 
     pub fn show(&mut self, seed: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(seed) = seed.filter(|s| !s.is_empty()) {
-            self.input.update(cx, |input, cx| input.set_value(seed, window, cx));
+            self.input
+                .update(cx, |input, cx| input.set_value(seed, window, cx));
         }
         self.input.update(cx, |input, cx| {
             input.focus(window, cx);
@@ -77,7 +87,9 @@ impl FindBar {
     }
 
     pub fn set_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.input.update(cx, |input, cx| input.set_value(text.to_string(), window, cx));
+        self.input.update(cx, |input, cx| {
+            input.set_value(text.to_string(), window, cx)
+        });
         self.emit_query(cx);
     }
 
@@ -129,8 +141,14 @@ pub fn toggle_button(
         .justify_center()
         .rounded(px(5.))
         .text_size(px(12.))
-        .when(active, |el| el.bg(palette.accent.opacity(0.18)).text_color(palette.accent))
-        .when(!active, |el| el.text_color(palette.text_secondary).hover(|s| s.bg(palette.hover)))
+        .when(active, |el| {
+            el.bg(palette.accent.opacity(0.18))
+                .text_color(palette.accent)
+        })
+        .when(!active, |el| {
+            el.text_color(palette.text_secondary)
+                .hover(|s| s.bg(palette.hover))
+        })
         .child(SharedString::from(label))
         .on_click(on_click)
 }
@@ -190,24 +208,60 @@ impl Render for FindBar {
                     .items_center()
                     .gap(px(6.))
                     .child(input_box(&self.input))
-                    .child(toggle_button("case", "Aa", "Match case", self.case_sensitive, &palette, cx.listener(|this, _, _, cx| this.toggle(0, cx))))
-                    .child(toggle_button("word", "W", "Whole word", self.whole_word, &palette, cx.listener(|this, _, _, cx| this.toggle(1, cx))))
-                    .child(toggle_button("regex", ".*", "Regular expression", self.regex, &palette, cx.listener(|this, _, _, cx| this.toggle(2, cx))))
-                    .child(text_button("prev", "‹", &palette, cx.listener(|this, _, _, cx| {
-                        if let Some(q) = this.query(cx) {
-                            cx.emit(FindBarEvent::Previous(q));
-                        }
-                    })))
-                    .child(text_button("next", "›", &palette, cx.listener(|this, _, _, cx| {
-                        if let Some(q) = this.query(cx) {
-                            cx.emit(FindBarEvent::Next(q));
-                        }
-                    })))
-                    .child(text_button("all", "All", &palette, cx.listener(|this, _, _, cx| {
-                        if let Some(q) = this.query(cx) {
-                            cx.emit(FindBarEvent::SelectAll(q));
-                        }
-                    }))),
+                    .child(toggle_button(
+                        "case",
+                        "Aa",
+                        "Match case",
+                        self.case_sensitive,
+                        &palette,
+                        cx.listener(|this, _, _, cx| this.toggle(0, cx)),
+                    ))
+                    .child(toggle_button(
+                        "word",
+                        "W",
+                        "Whole word",
+                        self.whole_word,
+                        &palette,
+                        cx.listener(|this, _, _, cx| this.toggle(1, cx)),
+                    ))
+                    .child(toggle_button(
+                        "regex",
+                        ".*",
+                        "Regular expression",
+                        self.regex,
+                        &palette,
+                        cx.listener(|this, _, _, cx| this.toggle(2, cx)),
+                    ))
+                    .child(text_button(
+                        "prev",
+                        "‹",
+                        &palette,
+                        cx.listener(|this, _, _, cx| {
+                            if let Some(q) = this.query(cx) {
+                                cx.emit(FindBarEvent::Previous(q));
+                            }
+                        }),
+                    ))
+                    .child(text_button(
+                        "next",
+                        "›",
+                        &palette,
+                        cx.listener(|this, _, _, cx| {
+                            if let Some(q) = this.query(cx) {
+                                cx.emit(FindBarEvent::Next(q));
+                            }
+                        }),
+                    ))
+                    .child(text_button(
+                        "all",
+                        "All",
+                        &palette,
+                        cx.listener(|this, _, _, cx| {
+                            if let Some(q) = this.query(cx) {
+                                cx.emit(FindBarEvent::SelectAll(q));
+                            }
+                        }),
+                    )),
             )
             .child(
                 div()
@@ -215,18 +269,28 @@ impl Render for FindBar {
                     .items_center()
                     .gap(px(6.))
                     .child(input_box(&self.replace))
-                    .child(text_button("replace", "Replace", &palette, cx.listener(|this, _, _, cx| {
-                        if let Some(q) = this.query(cx) {
-                            let with = this.replace.read(cx).value().to_string();
-                            cx.emit(FindBarEvent::Replace(q, with));
-                        }
-                    })))
-                    .child(text_button("replace-all", "Replace All", &palette, cx.listener(|this, _, _, cx| {
-                        if let Some(q) = this.query(cx) {
-                            let with = this.replace.read(cx).value().to_string();
-                            cx.emit(FindBarEvent::ReplaceAll(q, with));
-                        }
-                    }))),
+                    .child(text_button(
+                        "replace",
+                        "Replace",
+                        &palette,
+                        cx.listener(|this, _, _, cx| {
+                            if let Some(q) = this.query(cx) {
+                                let with = this.replace.read(cx).value().to_string();
+                                cx.emit(FindBarEvent::Replace(q, with));
+                            }
+                        }),
+                    ))
+                    .child(text_button(
+                        "replace-all",
+                        "Replace All",
+                        &palette,
+                        cx.listener(|this, _, _, cx| {
+                            if let Some(q) = this.query(cx) {
+                                let with = this.replace.read(cx).value().to_string();
+                                cx.emit(FindBarEvent::ReplaceAll(q, with));
+                            }
+                        }),
+                    )),
             )
     }
 }

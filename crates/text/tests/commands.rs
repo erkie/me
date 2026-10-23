@@ -231,12 +231,20 @@ fn column_selection_skips_short_lines() {
 
 #[test]
 fn zero_width_column_selection_puts_a_cursor_on_every_line() {
-    check("abcd\nab\nabcd", |s| s.select_column((0, 3), (2, 3)), "abc|d\nab|\nabc|d");
+    check(
+        "abcd\nab\nabcd",
+        |s| s.select_column((0, 3), (2, 3)),
+        "abc|d\nab|\nabc|d",
+    );
 }
 
 #[test]
 fn leftward_column_drag_makes_reversed_selections() {
-    check("abcd\nabcd", |s| s.select_column((0, 3), (1, 1)), "a{bc}d\na{bc}d");
+    check(
+        "abcd\nabcd",
+        |s| s.select_column((0, 3), (1, 1)),
+        "a{bc}d\na{bc}d",
+    );
 }
 
 #[test]
@@ -250,7 +258,11 @@ fn upward_column_drag() {
 
 #[test]
 fn column_selection_with_tabs_uses_visual_columns() {
-    check("\tab\n    ab", |s| s.select_column((0, 4), (1, 5)), "\t[a]b\n    [a]b");
+    check(
+        "\tab\n    ab",
+        |s| s.select_column((0, 4), (1, 5)),
+        "\t[a]b\n    [a]b",
+    );
 }
 
 #[test]

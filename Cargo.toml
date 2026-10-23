@@ -55,3 +55,11 @@ codegen-units = 1
 panic = "abort"
 strip = true
 opt-level = 3
+
+# Optimized but quick to rebuild, for profiling iterations.
+[profile.profiling]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+strip = false

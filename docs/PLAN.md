@@ -266,47 +266,67 @@ The directory is created with mode 0700.
 
 ## 8. Phases
 
-### Phase 0: Foundations (this commit)
+### Phase 0: Foundations (done)
 
 * [x] Technology decision and plan (this document).
 * [x] Cargo workspace with the six crates.
 * [x] `editor-text`: rope document, selection model, every multi-cursor
       command (Cmd+D, Cmd+L, Cmd+Shift+L, Ctrl+Cmd+G, add cursor above/below,
-      column selection), movement, editing, undo/redo, in-file search. Unit tests.
-* [x] `editor-project`: lazy directory listing, background file index, nucleo
-      fuzzy finder, streaming project search, replace-in-files. Unit tests.
-* [x] `editor-ipc` + `editor` CLI: single instance, `file:line:col`, `-w`.
-      Unit and integration tests.
-* [x] `editor-syntax`: lazy tree-sitter languages, viewport highlighting.
-* [x] App shell: window with sidebar tree, tabs, editor element with
-      multi-cursor and column selection, markdown preview, Cmd+T finder,
-      project search panel, follows system light/dark.
-* [x] Logo and icon pipeline, macOS bundle script with `Info.plist` document
-      types, CI on macOS and Linux.
+      column selection), movement, editing, undo/redo with typing coalescing,
+      clipboard with per-cursor distribution, find and replace (regex with
+      `$1` groups). 67 unit and behaviour tests.
+* [x] `editor-project`: ignore-aware directory listing, background file
+      index with the nucleo fuzzy matcher, parallel streaming project search,
+      atomic replace-in-files. 11 tests.
+* [x] `editor-ipc` + `editor` CLI: single instance, `file:line:col`, `-w`,
+      `-n`, `-`. Unit tests and end-to-end tests against a fake app.
+* [x] `editor-syntax`: 20 languages, built lazily, incremental parsing on a
+      background thread, highlighting of the visible byte range only.
+* [x] App: sidebar file tree, Sublime-style preview tabs, editor element
+      (viewport-only shaping, multi-cursor, Option-drag column selection, IME,
+      blinking cursor, current-line highlight, overlay scrollbar), markdown
+      preview (live, relative links open in tabs), Cmd+T finder, Cmd+F find
+      and replace bar, Cmd+Shift+F project search and replace, status bar,
+      native menus, prompts for unsaved changes, light/dark following the system.
+* [x] Logo (app icon and in-app mark), icon pipeline, `script/bundle-macos`
+      with `Info.plist` document types, Linux `.desktop` file, CI on macOS and
+      Linux.
 
-**Done when:** `cargo test --workspace` passes, CI builds on macOS and Linux,
-`script/bundle-macos` produces an `Editor.app` that opens a folder from
-`editor .`.
+**Verified here** (Linux, X11, software rendering): every crate's tests
+pass, and the app was driven with real input. That covered opening folders,
+expanding the tree, previewing markdown, Cmd+T, Cmd+D, Option-drag column
+editing, find, project search, dark mode, and `editor -w` launching the app
+and returning when the tab closed.
+
+**Not yet verified by hand:** the macOS build. CI builds and bundles it on
+`macos-15`, but nobody has run the native look (vibrancy, traffic lights,
+Finder "Open With", **Make Default Editor…**) on a Mac yet. That is the first
+task of Phase 1.
 
 ### Phase 1: Daily driver for reading (MVP)
 
-* Editor element polish: IME composition, smooth (pixel) scrolling and
-  overlay scrollbars, cursor blink, current-line highlight, bracket matching.
-* Sublime-style preview tabs (single click previews, edit or double click
-  pins). Tab overflow scrolling. Drag to reorder.
-* Find bar: incremental highlighting of all matches in the viewport. Regex,
-  case, and whole-word toggles. `Alt+Enter` turns all matches into cursors.
-* Search panel: include/exclude globs, a result tree grouped by file, replace
-  with preview and per-match toggles, undoable for open buffers.
-* File watching (`notify`): refresh the tree, reload unmodified buffers,
-  re-render the markdown preview live.
+* Run on macOS and fix whatever the native shell needs: traffic-light
+  spacing, vibrancy, menu shortcuts, Finder opens, **Install 'editor'
+  Command**, **Make Default Editor…**.
+* Measure cold start on an M-series Mac against the 100 ms budget
+  (`EDITOR_TRACE_STARTUP=1`) and trim anything on the startup path.
+* Tabs: overflow scrolling, drag to reorder, context menu (close others,
+  reveal in Finder, copy path).
+* Find bar: match count ("3 of 12"), keep the find query per tab.
+* Project search: per-match checkboxes before replacing, and a preview of
+  each replacement.
+* File watching (`notify`) instead of refresh-on-focus: refresh the tree,
+  reload unmodified buffers, and re-render the markdown preview live while
+  another program writes the file.
 * Session restore: windows, folders, tabs, cursors, scroll positions.
-* **Editor → Install 'editor' Command** and **Make Default Editor…**.
-* Markdown: GitHub alerts (`> [!NOTE]`), heading anchors, relative images,
-  click a link to open the file, front-matter table, readable column width.
+* Markdown: GitHub alerts (`> [!NOTE]`), heading anchors and in-page links,
+  relative images, front matter as a table, footnotes, and Mermaid (maybe).
+* Editor: bracket matching, auto-closing pairs, soft wrap for prose
+  (markdown source), a go-to-line prompt (`Ctrl+G`), and smooth scrollbar
+  dragging.
 
-**Done when:** a week of daily use in place of Sublime with no blocker bugs.
-Cold start ≤ 100 ms measured with `--trace-startup`.
+**Done when:** a week of daily use in place of Sublime with no blocker bugs,
+and cold start ≤ 100 ms.
 
 ### Phase 2: Huge files and performance hardening
 
@@ -354,6 +374,6 @@ LSP is the most likely later addition; the architecture leaves room for it.
   `Cmd+Shift+L` splits a selection into one cursor per line, and `Cmd+D` adds
   the next occurrence. If you want Cmd+L to do something else (for example
   VS Code's `Cmd+Shift+L`, select all occurrences), change it in
-  `crates/app/src/keymap.rs`.
+  `crates/app/src/actions.rs`.
 * **Name.** The working title is "Editor" and the CLI command is `editor`.
   Renaming means changing the bundle name and the binary name.

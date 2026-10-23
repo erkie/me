@@ -192,7 +192,9 @@ pub fn char_width(ch: char, col: usize, tab_width: usize) -> usize {
     if ch == '\t' {
         tab_width - (col % tab_width)
     } else {
-        ch.width().unwrap_or(0).max(if ch.is_control() { 0 } else { 1 })
+        ch.width()
+            .unwrap_or(0)
+            .max(if ch.is_control() { 0 } else { 1 })
     }
 }
 
@@ -218,7 +220,11 @@ pub fn char_col_at_visual(line: RopeSlice, target: usize, tab_width: usize) -> (
         let w = char_width(ch, col, tab_width);
         if col + w > target {
             // Snap to the nearer edge of the char.
-            return if target - col > w / 2 && w > 1 { (i + 1, false) } else { (i, false) };
+            return if target - col > w / 2 && w > 1 {
+                (i + 1, false)
+            } else {
+                (i, false)
+            };
         }
         col += w;
     }
@@ -227,7 +233,9 @@ pub fn char_col_at_visual(line: RopeSlice, target: usize, tab_width: usize) -> (
 
 /// Leading whitespace of a line, as a string.
 pub fn indentation(line: RopeSlice) -> String {
-    line.chars().take_while(|c| *c == ' ' || *c == '\t').collect()
+    line.chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .collect()
 }
 
 #[cfg(test)]

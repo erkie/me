@@ -12,11 +12,10 @@ use editor_text::SearchQuery;
 use futures::StreamExt;
 use futures::channel::mpsc;
 use gpui::{
-    AppContext,
-    App, Context, Entity, EventEmitter, HighlightStyle, InteractiveElement, IntoElement,
-    KeyDownEvent, ParentElement, PromptLevel, Render, SharedString, StatefulInteractiveElement,
-    StyledText, Styled, Subscription, Task, UniformListScrollHandle, Window, div,
-    px, svg, uniform_list,
+    App, AppContext, Context, Entity, EventEmitter, HighlightStyle, InteractiveElement,
+    IntoElement, KeyDownEvent, ParentElement, PromptLevel, Render, SharedString,
+    StatefulInteractiveElement, Styled, StyledText, Subscription, Task, UniformListScrollHandle,
+    Window, div, px, svg, uniform_list,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 
@@ -27,17 +26,35 @@ const MAX_MATCHES: usize = 20_000;
 const ROW_HEIGHT: f32 = 22.;
 
 pub enum SearchPanelEvent {
-    Open { path: PathBuf, line: u32, query: SearchQuery },
+    Open {
+        path: PathBuf,
+        line: u32,
+        query: SearchQuery,
+    },
     /// Replace in these files: open tabs get an undoable in-editor replace,
     /// the rest are rewritten on disk.
-    ReplaceAll { query: SearchQuery, replacement: String, files: Vec<PathBuf> },
+    ReplaceAll {
+        query: SearchQuery,
+        replacement: String,
+        files: Vec<PathBuf>,
+    },
     Dismiss,
 }
 
 #[derive(Clone)]
 enum Row {
-    File { path: PathBuf, relative: SharedString, count: usize, collapsed: bool },
-    Line { path: PathBuf, line: u64, preview: SharedString, ranges: Vec<std::ops::Range<usize>> },
+    File {
+        path: PathBuf,
+        relative: SharedString,
+        count: usize,
+        collapsed: bool,
+    },
+    Line {
+        path: PathBuf,
+        line: u64,
+        preview: SharedString,
+        ranges: Vec<std::ops::Range<usize>>,
+    },
 }
 
 pub struct SearchPanel {
@@ -68,18 +85,27 @@ impl SearchPanel {
     pub fn new(root: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let query_input = cx.new(|cx| InputState::new(window, cx).placeholder("Search"));
         let replace_input = cx.new(|cx| InputState::new(window, cx).placeholder("Replace"));
-        let include_input = cx.new(|cx| InputState::new(window, cx).placeholder("Files to include, e.g. *.md, src/"));
+        let include_input = cx
+            .new(|cx| InputState::new(window, cx).placeholder("Files to include, e.g. *.md, src/"));
         let subscriptions = vec![
-            cx.subscribe_in(&query_input, window, |this, _, event: &InputEvent, _, cx| {
-                if matches!(event, InputEvent::Change) {
-                    this.schedule_search(cx);
-                }
-            }),
-            cx.subscribe_in(&include_input, window, |this, _, event: &InputEvent, _, cx| {
-                if matches!(event, InputEvent::Change) {
-                    this.schedule_search(cx);
-                }
-            }),
+            cx.subscribe_in(
+                &query_input,
+                window,
+                |this, _, event: &InputEvent, _, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        this.schedule_search(cx);
+                    }
+                },
+            ),
+            cx.subscribe_in(
+                &include_input,
+                window,
+                |this, _, event: &InputEvent, _, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        this.schedule_search(cx);
+                    }
+                },
+            ),
         ];
         Self {
             root,
@@ -106,10 +132,12 @@ impl SearchPanel {
 
     pub fn show(&mut self, seed: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(seed) = seed.filter(|s| !s.is_empty()) {
-            self.query_input.update(cx, |input, cx| input.set_value(seed, window, cx));
+            self.query_input
+                .update(cx, |input, cx| input.set_value(seed, window, cx));
             self.schedule_search(cx);
         }
-        self.query_input.update(cx, |input, cx| input.focus(window, cx));
+        self.query_input
+            .update(cx, |input, cx| input.focus(window, cx));
     }
 
     fn query(&self, cx: &App) -> Option<SearchQuery> {
@@ -127,7 +155,9 @@ impl SearchPanel {
 
     fn schedule_search(&mut self, cx: &mut Context<Self>) {
         self.debounce = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(Duration::from_millis(180)).await;
+            cx.background_executor()
+                .timer(Duration::from_millis(180))
+                .await;
             this.update(cx, |this, cx| this.run(cx)).ok();
         }));
     }
@@ -163,10 +193,19 @@ impl SearchPanel {
             .filter(|s| !s.is_empty())
             .map(|s| {
                 // "src/" means everything under src.
-                if s.ends_with('/') { format!("{s}**") } else { s.to_string() }
+                if s.ends_with('/') {
+                    format!("{s}**")
+                } else {
+                    s.to_string()
+                }
             })
             .collect();
-        let options = SearchOptions { query: query.clone(), include, exclude: Vec::new(), max_matches: MAX_MATCHES };
+        let options = SearchOptions {
+            query: query.clone(),
+            include,
+            exclude: Vec::new(),
+            max_matches: MAX_MATCHES,
+        };
         self.last_query = Some(query);
         let cancel = Arc::new(AtomicBool::new(false));
         self.cancel = cancel.clone();
@@ -186,7 +225,10 @@ impl SearchPanel {
                 if last_flush.elapsed() > Duration::from_millis(50) {
                     last_flush = Instant::now();
                     let batch = std::mem::take(&mut pending);
-                    if this.update(cx, |this, cx| this.add_results(batch, cx)).is_err() {
+                    if this
+                        .update(cx, |this, cx| this.add_results(batch, cx))
+                        .is_err()
+                    {
                         return;
                     }
                 }
@@ -229,7 +271,12 @@ impl SearchPanel {
             if !collapsed {
                 for line in &file.lines {
                     let (preview, ranges) = compact_preview(&line.preview, &line.ranges);
-                    rows.push(Row::Line { path: file.path.clone(), line: line.line_number, preview, ranges });
+                    rows.push(Row::Line {
+                        path: file.path.clone(),
+                        line: line.line_number,
+                        preview,
+                        ranges,
+                    });
                 }
             }
         }
@@ -246,7 +293,9 @@ impl SearchPanel {
     }
 
     fn replace_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(query) = self.last_query.clone() else { return };
+        let Some(query) = self.last_query.clone() else {
+            return;
+        };
         let replacement = self.replace_input.read(cx).value().to_string();
         let files: Vec<PathBuf> = self.results.iter().map(|f| f.path.clone()).collect();
         let total: usize = self.results.iter().map(|f| f.match_count()).sum();
@@ -264,7 +313,14 @@ impl SearchPanel {
             if answer.await.ok() != Some(0) {
                 return;
             }
-            this.update(cx, |_, cx| cx.emit(SearchPanelEvent::ReplaceAll { query, replacement, files })).ok();
+            this.update(cx, |_, cx| {
+                cx.emit(SearchPanelEvent::ReplaceAll {
+                    query,
+                    replacement,
+                    files,
+                })
+            })
+            .ok();
         })
         .detach();
     }
@@ -301,7 +357,11 @@ impl Render for SearchPanel {
             format!("Searching… {} files", self.results.len()).into()
         } else if let Some(stats) = self.stats {
             let more = if stats.truncated { "+" } else { "" };
-            format!("{}{more} results in {} files", stats.matches, stats.files_matched).into()
+            format!(
+                "{}{more} results in {} files",
+                stats.matches, stats.files_matched
+            )
+            .into()
         } else {
             "".into()
         };
@@ -325,9 +385,30 @@ impl Render for SearchPanel {
                         div()
                             .flex()
                             .gap(px(4.))
-                            .child(toggle_button("p-case", "Aa", "Match case", self.case_sensitive, &palette, cx.listener(|this, _, _, cx| this.toggle_option(0, cx))))
-                            .child(toggle_button("p-word", "W", "Whole word", self.whole_word, &palette, cx.listener(|this, _, _, cx| this.toggle_option(1, cx))))
-                            .child(toggle_button("p-regex", ".*", "Regular expression", self.regex, &palette, cx.listener(|this, _, _, cx| this.toggle_option(2, cx)))),
+                            .child(toggle_button(
+                                "p-case",
+                                "Aa",
+                                "Match case",
+                                self.case_sensitive,
+                                &palette,
+                                cx.listener(|this, _, _, cx| this.toggle_option(0, cx)),
+                            ))
+                            .child(toggle_button(
+                                "p-word",
+                                "W",
+                                "Whole word",
+                                self.whole_word,
+                                &palette,
+                                cx.listener(|this, _, _, cx| this.toggle_option(1, cx)),
+                            ))
+                            .child(toggle_button(
+                                "p-regex",
+                                ".*",
+                                "Regular expression",
+                                self.regex,
+                                &palette,
+                                cx.listener(|this, _, _, cx| this.toggle_option(2, cx)),
+                            )),
                     )
                     .child(input_box(&self.replace_input))
                     .child(input_box(&self.include_input))
@@ -336,24 +417,50 @@ impl Render for SearchPanel {
                             .flex()
                             .items_center()
                             .justify_between()
-                            .child(div().text_size(px(11.)).text_color(palette.text_secondary).child(summary))
-                            .child(text_button("p-replace-all", "Replace All", &palette, cx.listener(|this, _, window, cx| this.replace_all(window, cx)))),
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(palette.text_secondary)
+                                    .child(summary),
+                            )
+                            .child(text_button(
+                                "p-replace-all",
+                                "Replace All",
+                                &palette,
+                                cx.listener(|this, _, window, cx| this.replace_all(window, cx)),
+                            )),
                     ),
             )
             .child(
-                div().flex_1().min_h(px(0.)).border_t_1().border_color(palette.border).child(
-                    uniform_list(
-                        "search-results",
-                        rows.len(),
-                        cx.processor(move |_this, range: std::ops::Range<usize>, _window, cx| {
-                            range
-                                .map(|ix| render_row(ix, &rows[ix], query.as_ref(), &palette, &mono, cx))
-                                .collect()
-                        }),
-                    )
-                    .track_scroll(&self.scroll)
-                    .size_full(),
-                ),
+                div()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .border_t_1()
+                    .border_color(palette.border)
+                    .child(
+                        uniform_list(
+                            "search-results",
+                            rows.len(),
+                            cx.processor(
+                                move |_this, range: std::ops::Range<usize>, _window, cx| {
+                                    range
+                                        .map(|ix| {
+                                            render_row(
+                                                ix,
+                                                &rows[ix],
+                                                query.as_ref(),
+                                                &palette,
+                                                &mono,
+                                                cx,
+                                            )
+                                        })
+                                        .collect()
+                                },
+                            ),
+                        )
+                        .track_scroll(&self.scroll)
+                        .size_full(),
+                    ),
             )
     }
 }
@@ -375,7 +482,11 @@ fn compact_preview(
             cut -= 1;
         }
     }
-    let prefix = if cut > 0 && cut > trimmed.len() - trimmed.trim_start().len() { "…" } else { "" };
+    let prefix = if cut > 0 && cut > trimmed.len() - trimmed.trim_start().len() {
+        "…"
+    } else {
+        ""
+    };
     let text = format!("{prefix}{}", &trimmed[cut.min(trimmed.len())..]);
     let shift = prefix.len() as isize - cut as isize;
     let ranges = ranges
@@ -395,7 +506,12 @@ fn render_row(
     cx: &mut Context<SearchPanel>,
 ) -> gpui::AnyElement {
     match row.clone() {
-        Row::File { path, relative, count, collapsed } => div()
+        Row::File {
+            path,
+            relative,
+            count,
+            collapsed,
+        } => div()
             .id(ix)
             .w_full()
             .h(px(ROW_HEIGHT))
@@ -405,9 +521,34 @@ fn render_row(
             .gap(px(4.))
             .text_size(px(12.))
             .hover(|s| s.bg(palette.hover))
-            .child(svg().path(if collapsed { "icons/chevron-right.svg" } else { "icons/chevron-down.svg" }).size(px(11.)).text_color(palette.text_tertiary))
-            .child(div().flex_1().overflow_hidden().text_ellipsis().whitespace_nowrap().font_weight(gpui::FontWeight::MEDIUM).child(relative))
-            .child(div().px(px(6.)).rounded_full().bg(palette.hover).text_size(px(10.)).text_color(palette.text_secondary).child(count.to_string()))
+            .child(
+                svg()
+                    .path(if collapsed {
+                        "icons/chevron-right.svg"
+                    } else {
+                        "icons/chevron-down.svg"
+                    })
+                    .size(px(11.))
+                    .text_color(palette.text_tertiary),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .whitespace_nowrap()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .child(relative),
+            )
+            .child(
+                div()
+                    .px(px(6.))
+                    .rounded_full()
+                    .bg(palette.hover)
+                    .text_size(px(10.))
+                    .text_color(palette.text_secondary)
+                    .child(count.to_string()),
+            )
             .on_click(cx.listener(move |this, _, _, cx| {
                 if !this.collapsed.remove(&path) {
                     this.collapsed.insert(path.clone());
@@ -416,12 +557,23 @@ fn render_row(
                 cx.notify();
             }))
             .into_any_element(),
-        Row::Line { path, line, preview, ranges } => {
+        Row::Line {
+            path,
+            line,
+            preview,
+            ranges,
+        } => {
             let highlights: Vec<_> = ranges
                 .iter()
                 .filter(|r| r.end <= preview.len())
                 .map(|r| {
-                    (r.clone(), HighlightStyle { background_color: Some(palette.find_match), ..Default::default() })
+                    (
+                        r.clone(),
+                        HighlightStyle {
+                            background_color: Some(palette.find_match),
+                            ..Default::default()
+                        },
+                    )
                 })
                 .collect();
             let query = query.cloned();
@@ -435,7 +587,14 @@ fn render_row(
                 .items_center()
                 .gap(px(8.))
                 .hover(|s| s.bg(palette.hover))
-                .child(div().w(px(32.)).flex_none().text_size(px(10.5)).text_color(palette.text_tertiary).child(line.to_string()))
+                .child(
+                    div()
+                        .w(px(32.))
+                        .flex_none()
+                        .text_size(px(10.5))
+                        .text_color(palette.text_tertiary)
+                        .child(line.to_string()),
+                )
                 .child(
                     div()
                         .flex_1()
@@ -447,7 +606,11 @@ fn render_row(
                 )
                 .on_click(cx.listener(move |_, _, _, cx| {
                     if let Some(query) = query.clone() {
-                        cx.emit(SearchPanelEvent::Open { path: path.clone(), line: line as u32, query });
+                        cx.emit(SearchPanelEvent::Open {
+                            path: path.clone(),
+                            line: line as u32,
+                            query,
+                        });
                     }
                 }))
                 .into_any_element()

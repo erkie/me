@@ -31,12 +31,24 @@ pub fn list_dir(dir: &Path) -> io::Result<Vec<DirEntry>> {
         if ALWAYS_HIDDEN.contains(&name.as_str()) {
             continue;
         }
-        let Ok(file_type) = entry.file_type() else { continue };
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
         let path = entry.path();
         let is_symlink = file_type.is_symlink();
-        let is_dir = if is_symlink { path.is_dir() } else { file_type.is_dir() };
+        let is_dir = if is_symlink {
+            path.is_dir()
+        } else {
+            file_type.is_dir()
+        };
         let ignored = not_ignored.as_ref().is_some_and(|set| !set.contains(&name));
-        entries.push(DirEntry { name, path, is_dir, is_symlink, ignored });
+        entries.push(DirEntry {
+            name,
+            path,
+            is_dir,
+            is_symlink,
+            ignored,
+        });
     }
     entries.sort_by(compare_entries);
     Ok(entries)
@@ -65,7 +77,9 @@ fn not_ignored_names(dir: &Path) -> Option<HashSet<String>> {
 }
 
 fn compare_entries(a: &DirEntry, b: &DirEntry) -> Ordering {
-    b.is_dir.cmp(&a.is_dir).then_with(|| natural_cmp(&a.name, &b.name))
+    b.is_dir
+        .cmp(&a.is_dir)
+        .then_with(|| natural_cmp(&a.name, &b.name))
 }
 
 /// Case-insensitive comparison that orders digit runs numerically.
@@ -123,8 +137,15 @@ mod tests {
 
         let entries = list_dir(root).unwrap();
         let names: Vec<_> = entries.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(names, vec!["src", "target", ".gitignore", "debug.log", "README.md"]);
-        let ignored: Vec<_> = entries.iter().filter(|e| e.ignored).map(|e| &e.name).collect();
+        assert_eq!(
+            names,
+            vec!["src", "target", ".gitignore", "debug.log", "README.md"]
+        );
+        let ignored: Vec<_> = entries
+            .iter()
+            .filter(|e| e.ignored)
+            .map(|e| &e.name)
+            .collect();
         assert_eq!(ignored, vec!["target", "debug.log"]);
     }
 }

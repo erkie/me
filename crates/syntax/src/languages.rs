@@ -97,7 +97,14 @@ pub static LANGUAGES: &[LanguageDef] = &[
     LanguageDef {
         name: "Shell",
         extensions: &["sh", "bash", "zsh", "command"],
-        filenames: &[".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile", ".envrc"],
+        filenames: &[
+            ".bashrc",
+            ".zshrc",
+            ".profile",
+            ".bash_profile",
+            ".zprofile",
+            ".envrc",
+        ],
         line_comment: Some("#"),
         grammar: grammar!(tree_sitter_bash),
         highlights: &[tree_sitter_bash::HIGHLIGHT_QUERY],
@@ -116,7 +123,10 @@ pub static LANGUAGES: &[LanguageDef] = &[
         filenames: &[],
         line_comment: Some("//"),
         grammar: grammar!(tree_sitter_cpp),
-        highlights: &[tree_sitter_cpp::HIGHLIGHT_QUERY, tree_sitter_c::HIGHLIGHT_QUERY],
+        highlights: &[
+            tree_sitter_cpp::HIGHLIGHT_QUERY,
+            tree_sitter_c::HIGHLIGHT_QUERY,
+        ],
     },
     LanguageDef {
         name: "CSS",

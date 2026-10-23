@@ -31,7 +31,6 @@ pub struct Palette {
     pub ignored_text: Hsla,
     pub modified_dot: Hsla,
     pub overlay_bg: Hsla,
-    pub shadow: Hsla,
     syntax: SyntaxColors,
 }
 
@@ -89,7 +88,6 @@ impl Palette {
             ignored_text: rgb(0xa8a8ad).into(),
             modified_dot: rgb(0x6e6e73).into(),
             overlay_bg: rgb(0xfbfbfd).into(),
-            shadow: rgba(0x00000033).into(),
             syntax: SyntaxColors {
                 comment: rgb(0x707f8c).into(),
                 keyword: rgb(0x9b2393).into(),
@@ -142,7 +140,6 @@ impl Palette {
             ignored_text: rgb(0x6e6e73).into(),
             modified_dot: rgb(0xa1a1a6).into(),
             overlay_bg: rgb(0x2c2c31).into(),
-            shadow: rgba(0x00000080).into(),
             syntax: SyntaxColors {
                 comment: rgb(0x7f8c98).into(),
                 keyword: rgb(0xfc5fa3).into(),
@@ -222,7 +219,12 @@ const MONO_CANDIDATES: &[&str] = if cfg!(target_os = "macos") {
 } else if cfg!(target_os = "windows") {
     &["Cascadia Mono", "Consolas", "Courier New"]
 } else {
-    &["DejaVu Sans Mono", "Noto Sans Mono", "Liberation Mono", "Ubuntu Mono"]
+    &[
+        "DejaVu Sans Mono",
+        "Noto Sans Mono",
+        "Liberation Mono",
+        "Ubuntu Mono",
+    ]
 };
 
 /// Picks the first monospace family that actually resolves. Probing a few
@@ -231,7 +233,10 @@ fn resolve_mono(cx: &App) -> SharedString {
     let text_system = cx.text_system();
     for family in MONO_CANDIDATES {
         let id = text_system.resolve_font(&font(*family));
-        if text_system.get_font_for_id(id).is_some_and(|f| f.family.as_ref() == *family) {
+        if text_system
+            .get_font_for_id(id)
+            .is_some_and(|f| f.family.as_ref() == *family)
+        {
             return SharedString::from(*family);
         }
     }
@@ -239,7 +244,10 @@ fn resolve_mono(cx: &App) -> SharedString {
 }
 
 pub fn init(appearance: WindowAppearance, cx: &mut App) {
-    let fonts = Fonts { ui: ".SystemUIFont".into(), mono: resolve_mono(cx) };
+    let fonts = Fonts {
+        ui: ".SystemUIFont".into(),
+        mono: resolve_mono(cx),
+    };
     cx.set_global(fonts);
     apply(appearance, cx);
 }
@@ -257,7 +265,11 @@ pub fn apply(appearance: WindowAppearance, cx: &mut App) {
     if cx.has_global::<Palette>() && cx.global::<Palette>().is_dark == palette.is_dark {
         return;
     }
-    let mode = if palette.is_dark { ThemeMode::Dark } else { ThemeMode::Light };
+    let mode = if palette.is_dark {
+        ThemeMode::Dark
+    } else {
+        ThemeMode::Light
+    };
     Theme::change(mode, None, cx);
     let mono = fonts(cx).mono.clone();
     let p = palette.clone();

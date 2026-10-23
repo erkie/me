@@ -97,7 +97,9 @@ pub fn search(
         overrides.add(glob).map_err(|e| e.to_string())?;
     }
     for glob in &options.exclude {
-        overrides.add(&format!("!{glob}")).map_err(|e| e.to_string())?;
+        overrides
+            .add(&format!("!{glob}"))
+            .map_err(|e| e.to_string())?;
     }
     let overrides = overrides.build().map_err(|e| e.to_string())?;
 
@@ -106,7 +108,9 @@ pub fn search(
         .require_git(false)
         .overrides(overrides)
         .filter_entry(|e| {
-            !e.file_name().to_str().is_some_and(|name| ALWAYS_HIDDEN.contains(&name))
+            !e.file_name()
+                .to_str()
+                .is_some_and(|name| ALWAYS_HIDDEN.contains(&name))
         })
         .build_parallel();
 
@@ -114,7 +118,11 @@ pub fn search(
     let files_matched = AtomicUsize::new(0);
     let total = AtomicUsize::new(0);
     let limit_hit = AtomicBool::new(false);
-    let max = if options.max_matches == 0 { usize::MAX } else { options.max_matches };
+    let max = if options.max_matches == 0 {
+        usize::MAX
+    } else {
+        options.max_matches
+    };
 
     walker.run(|| {
         let matcher = matcher.clone();
@@ -129,13 +137,21 @@ pub fn search(
             if cancel.load(Ordering::Relaxed) || limit_hit.load(Ordering::Relaxed) {
                 return ignore::WalkState::Quit;
             }
-            let Ok(entry) = entry else { return ignore::WalkState::Continue };
+            let Ok(entry) = entry else {
+                return ignore::WalkState::Continue;
+            };
             if !entry.file_type().is_some_and(|t| t.is_file()) {
                 return ignore::WalkState::Continue;
             }
             files_searched.fetch_add(1, Ordering::Relaxed);
-            let mut sink = CollectSink { matcher: &matcher, lines: Vec::new() };
-            if searcher.search_path(&matcher, entry.path(), &mut sink).is_err() {
+            let mut sink = CollectSink {
+                matcher: &matcher,
+                lines: Vec::new(),
+            };
+            if searcher
+                .search_path(&matcher, entry.path(), &mut sink)
+                .is_err()
+            {
                 return ignore::WalkState::Continue;
             }
             if sink.lines.is_empty() {
@@ -211,7 +227,11 @@ impl Sink for CollectSink<'_> {
 
 fn make_preview(line: &[u8], ranges: &[Range<usize>]) -> (String, usize, Vec<Range<usize>>) {
     if line.len() <= MAX_PREVIEW {
-        return (String::from_utf8_lossy(line).into_owned(), 0, ranges.to_vec());
+        return (
+            String::from_utf8_lossy(line).into_owned(),
+            0,
+            ranges.to_vec(),
+        );
     }
     let first = ranges.first().map_or(0, |r| r.start);
     let mut start = first.saturating_sub(MAX_PREVIEW / 4);
@@ -279,15 +299,21 @@ pub fn replace_in_text(
             let line_start = rope.line_to_byte(line);
             let start = rope.char_to_byte(range.start) - line_start;
             let end = rope.char_to_byte(range.end) - line_start;
-            wanted.contains(&MatchRef { line_number: line as u64 + 1, range: start..end })
+            wanted.contains(&MatchRef {
+                line_number: line as u64 + 1,
+                range: start..end,
+            })
         });
     }
     if reps.is_empty() {
         return Ok(None);
     }
     let count = reps.len();
-    let changes =
-        ChangeSet::new(reps.into_iter().map(|(r, t)| Change::new(r.start, r.end, t)).collect());
+    let changes = ChangeSet::new(
+        reps.into_iter()
+            .map(|(r, t)| Change::new(r.start, r.end, t))
+            .collect(),
+    );
     changes.apply(&mut rope);
     Ok(Some((rope.to_string(), count)))
 }
@@ -325,8 +351,16 @@ mod tests {
         fs::create_dir_all(root.join("src")).unwrap();
         fs::create_dir_all(root.join("build")).unwrap();
         fs::write(root.join(".gitignore"), "build/\n").unwrap();
-        fs::write(root.join("src/a.rs"), "fn foo() {}\nlet x = foo();\nfoo_bar();\n").unwrap();
-        fs::write(root.join("src/b.md"), "# Foo\nNothing here\r\nfoo again\r\n").unwrap();
+        fs::write(
+            root.join("src/a.rs"),
+            "fn foo() {}\nlet x = foo();\nfoo_bar();\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/b.md"),
+            "# Foo\nNothing here\r\nfoo again\r\n",
+        )
+        .unwrap();
         fs::write(root.join("build/out.rs"), "foo foo foo\n").unwrap();
         fs::write(root.join("bin.dat"), b"foo\0\x01\x02").unwrap();
         dir
@@ -339,7 +373,10 @@ mod tests {
     #[test]
     fn finds_matches_respecting_ignore_and_binary() {
         let dir = project();
-        let opts = SearchOptions { query: query("foo"), ..Default::default() };
+        let opts = SearchOptions {
+            query: query("foo"),
+            ..Default::default()
+        };
         let results = search_collect(dir.path(), &opts).unwrap();
         let files: Vec<_> = results.iter().map(|f| f.relative.as_str()).collect();
         assert_eq!(files, vec!["src/a.rs", "src/b.md"]);
@@ -376,7 +413,10 @@ mod tests {
     #[test]
     fn regex_search() {
         let dir = project();
-        let opts = SearchOptions { query: query(r"foo\(\)").regex(true), ..Default::default() };
+        let opts = SearchOptions {
+            query: query(r"foo\(\)").regex(true),
+            ..Default::default()
+        };
         let results = search_collect(dir.path(), &opts).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].match_count(), 2);
@@ -388,7 +428,11 @@ mod tests {
         for i in 0..50 {
             fs::write(dir.path().join(format!("f{i}.txt")), "hit\n").unwrap();
         }
-        let opts = SearchOptions { query: query("hit"), max_matches: 10, ..Default::default() };
+        let opts = SearchOptions {
+            query: query("hit"),
+            max_matches: 10,
+            ..Default::default()
+        };
         let cancel = AtomicBool::new(false);
         let stats = search(dir.path(), &opts, &cancel, |_| {}).unwrap();
         assert!(stats.truncated);
@@ -400,7 +444,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let line = format!("{}needle{}", "x".repeat(10_000), "y".repeat(10_000));
         fs::write(dir.path().join("min.js"), &line).unwrap();
-        let opts = SearchOptions { query: query("needle"), ..Default::default() };
+        let opts = SearchOptions {
+            query: query("needle"),
+            ..Default::default()
+        };
         let results = search_collect(dir.path(), &opts).unwrap();
         let m = &results[0].lines[0];
         assert!(m.preview.len() <= MAX_PREVIEW + 4);
@@ -414,14 +461,28 @@ mod tests {
         let path = dir.path().join("src/a.rs");
         let n = replace_in_file(&path, &query("foo").whole_word(true), "baz", None).unwrap();
         assert_eq!(n, 2);
-        assert_eq!(fs::read_to_string(&path).unwrap(), "fn baz() {}\nlet x = baz();\nfoo_bar();\n");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "fn baz() {}\nlet x = baz();\nfoo_bar();\n"
+        );
 
         let path = dir.path().join("src/b.md");
-        let only = [MatchRef { line_number: 3, range: 0..3 }];
-        let n = replace_in_file(&path, &query("foo").case_sensitive(false), "bar", Some(&only))
-            .unwrap();
+        let only = [MatchRef {
+            line_number: 3,
+            range: 0..3,
+        }];
+        let n = replace_in_file(
+            &path,
+            &query("foo").case_sensitive(false),
+            "bar",
+            Some(&only),
+        )
+        .unwrap();
         assert_eq!(n, 1);
-        assert_eq!(fs::read_to_string(&path).unwrap(), "# Foo\nNothing here\r\nbar again\r\n");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "# Foo\nNothing here\r\nbar again\r\n"
+        );
     }
 
     #[test]

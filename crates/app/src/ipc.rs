@@ -23,7 +23,9 @@ mod unix {
                     let tx = tx.clone();
                     std::thread::spawn(move || {
                         // Liveness probes connect and hang up without a request.
-                        let Ok(Some(request)) = conn.recv() else { return };
+                        let Ok(Some(request)) = conn.recv() else {
+                            return;
+                        };
                         let (reply_tx, mut reply_rx) = mpsc::unbounded();
                         if tx.unbounded_send((request, reply_tx)).is_err() {
                             return;

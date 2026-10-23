@@ -3,7 +3,6 @@
 
 use std::path::{Path, PathBuf};
 
-use editor_text::SearchQuery;
 use gpui::{
     AnyElement, App, AppContext, ClickEvent, Context, CursorStyle, Entity, FocusHandle, Focusable,
     InteractiveElement, IntoElement, KeyContext, MouseButton, MouseMoveEvent, ParentElement,
@@ -78,6 +77,8 @@ pub struct Workspace {
     closed: Vec<PathBuf>,
     recent: Vec<PathBuf>,
     should_move_window: bool,
+    /// The user already agreed to discard unsaved changes on close.
+    pub close_confirmed: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -117,6 +118,7 @@ impl Workspace {
             closed: Vec::new(),
             recent: Vec::new(),
             should_move_window: false,
+            close_confirmed: false,
             _subscriptions: subscriptions,
         };
         if let Some(root) = root {
@@ -135,30 +137,52 @@ impl Workspace {
 
     pub fn set_root(&mut self, root: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let tree = cx.new(|cx| FileTree::new(root.clone(), cx));
-        self._subscriptions.push(cx.subscribe_in(&tree, window, |this, _, event: &FileTreeEvent, window, cx| {
-            match event {
+        self._subscriptions.push(cx.subscribe_in(
+            &tree,
+            window,
+            |this, _, event: &FileTreeEvent, window, cx| match event {
                 FileTreeEvent::Open { path, pin } => {
-                    this.open_path(path.clone(), OpenOptions { pin: *pin, ..Default::default() }, window, cx);
+                    this.open_path(
+                        path.clone(),
+                        OpenOptions {
+                            pin: *pin,
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    );
                 }
-            }
-        }));
+            },
+        ));
         let finder = cx.new(|cx| FinderView::new(root.clone(), window, cx));
-        self._subscriptions.push(cx.subscribe_in(&finder, window, |this, _, event: &FinderEvent, window, cx| {
-            match event {
+        self._subscriptions.push(cx.subscribe_in(
+            &finder,
+            window,
+            |this, _, event: &FinderEvent, window, cx| match event {
                 FinderEvent::Open { path, line } => {
                     this.finder_open = false;
                     let (line, column) = line.map_or((None, None), |(l, c)| (Some(l), c));
-                    this.open_path(path.clone(), OpenOptions { pin: true, line, column }, window, cx);
+                    this.open_path(
+                        path.clone(),
+                        OpenOptions {
+                            pin: true,
+                            line,
+                            column,
+                        },
+                        window,
+                        cx,
+                    );
                 }
                 FinderEvent::Dismiss => {
                     this.finder_open = false;
                     this.focus_active(window, cx);
                     cx.notify();
                 }
-            }
-        }));
+            },
+        ));
         let search = cx.new(|cx| SearchPanel::new(root.clone(), window, cx));
-        self._subscriptions.push(cx.subscribe_in(&search, window, Self::on_search_event));
+        self._subscriptions
+            .push(cx.subscribe_in(&search, window, Self::on_search_event));
         self.root = Some(root);
         self.file_tree = Some(tree);
         self.finder = Some(finder);
@@ -172,7 +196,8 @@ impl Workspace {
             tree.update(cx, |tree, cx| tree.refresh(cx));
         }
         for tab in &self.tabs {
-            tab.editor.update(cx, |editor, cx| editor.reload_if_changed(cx));
+            tab.editor
+                .update(cx, |editor, cx| editor.reload_if_changed(cx));
         }
     }
 
@@ -180,8 +205,11 @@ impl Workspace {
         self.tabs.iter().map(|t| t.id).collect()
     }
 
-    pub fn has_dirty_tabs(&self, cx: &App) -> bool {
-        self.tabs.iter().any(|t| t.editor.read(cx).is_dirty())
+    pub fn dirty_count(&self, cx: &App) -> usize {
+        self.tabs
+            .iter()
+            .filter(|t| t.editor.read(cx).is_dirty())
+            .count()
     }
 
     fn active_tab(&self) -> Option<&Tab> {
@@ -200,8 +228,14 @@ impl Workspace {
     }
 
     fn update_title(&self, window: &mut Window, cx: &App) {
-        let folder = self.root.as_ref().and_then(|r| r.file_name()).map(|n| n.to_string_lossy().into_owned());
-        let file = self.active_tab().map(|t| t.editor.read(cx).title().to_string());
+        let folder = self
+            .root
+            .as_ref()
+            .and_then(|r| r.file_name())
+            .map(|n| n.to_string_lossy().into_owned());
+        let file = self
+            .active_tab()
+            .map(|t| t.editor.read(cx).title().to_string());
         let title = match (file, folder) {
             (Some(file), Some(folder)) => format!("{file} — {folder}"),
             (Some(file), None) => file,
@@ -216,14 +250,26 @@ impl Workspace {
     // ---------------------------------------------------------------------
 
     /// Opens (or focuses) a file and returns its tab id.
-    pub fn open_path(&mut self, path: PathBuf, options: OpenOptions, window: &mut Window, cx: &mut Context<Self>) -> u64 {
-        if let Some(ix) = self.tabs.iter().position(|t| t.editor.read(cx).path() == Some(path.as_path())) {
+    pub fn open_path(
+        &mut self,
+        path: PathBuf,
+        options: OpenOptions,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> u64 {
+        if let Some(ix) = self
+            .tabs
+            .iter()
+            .position(|t| t.editor.read(cx).path() == Some(path.as_path()))
+        {
             if options.pin {
                 self.tabs[ix].pinned = true;
             }
             self.activate(ix, window, cx);
             if let Some(line) = options.line {
-                self.tabs[ix].editor.update(cx, |e, cx| e.go_to(line, options.column, cx));
+                self.tabs[ix]
+                    .editor
+                    .update(cx, |e, cx| e.go_to(line, options.column, cx));
             }
             return self.tabs[ix].id;
         }
@@ -269,10 +315,19 @@ impl Workspace {
         id
     }
 
-    fn make_tab(&mut self, editor: Entity<EditorView>, pinned: bool, markdown: bool, window: &mut Window, cx: &mut Context<Self>) -> Tab {
+    fn make_tab(
+        &mut self,
+        editor: Entity<EditorView>,
+        pinned: bool,
+        markdown: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Tab {
         let id = app_state::next_tab_id(cx);
-        let mut subscriptions = vec![cx.subscribe_in(&editor, window, move |this, _, event: &EditorEvent, window, cx| {
-            match event {
+        let mut subscriptions = vec![cx.subscribe_in(
+            &editor,
+            window,
+            move |this, _, event: &EditorEvent, window, cx| match event {
                 EditorEvent::Changed | EditorEvent::DirtyChanged => {
                     if let Some(tab) = this.tabs.iter_mut().find(|t| t.id == id)
                         && !tab.pinned
@@ -290,20 +345,37 @@ impl Workspace {
                     cx.notify();
                 }
                 EditorEvent::Loaded => cx.notify(),
-            }
-        })];
+            },
+        )];
         let preview = markdown.then(|| {
             let preview = cx.new(|cx| MarkdownPreview::new(editor.clone(), window, cx));
-            subscriptions.push(cx.subscribe_in(&preview, window, |this, _, event: &MarkdownEvent, window, cx| {
-                match event {
+            subscriptions.push(cx.subscribe_in(
+                &preview,
+                window,
+                |this, _, event: &MarkdownEvent, window, cx| match event {
                     MarkdownEvent::OpenPath(path) => {
-                        this.open_path(path.clone(), OpenOptions { pin: true, ..Default::default() }, window, cx);
+                        this.open_path(
+                            path.clone(),
+                            OpenOptions {
+                                pin: true,
+                                ..Default::default()
+                            },
+                            window,
+                            cx,
+                        );
                     }
-                }
-            }));
+                },
+            ));
             preview
         });
-        Tab { id, editor, show_preview: preview.is_some(), preview, pinned, _subscriptions: subscriptions }
+        Tab {
+            id,
+            editor,
+            show_preview: preview.is_some(),
+            preview,
+            pinned,
+            _subscriptions: subscriptions,
+        }
     }
 
     pub fn activate(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -320,12 +392,6 @@ impl Workspace {
         self.sync_find_highlights(cx);
         self.update_title(window, cx);
         cx.notify();
-    }
-
-    fn activate_by_id(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(ix) = self.tabs.iter().position(|t| t.id == id) {
-            self.activate(ix, window, cx);
-        }
     }
 
     /// Closes a tab, asking first if it has unsaved changes.
@@ -351,7 +417,9 @@ impl Workspace {
                 return;
             }
             if answer == 0 {
-                let save = this.update_in(cx, |_, window, cx| editor.update(cx, |e, cx| e.save(window, cx)));
+                let save = this.update_in(cx, |_, window, cx| {
+                    editor.update(cx, |e, cx| e.save(window, cx))
+                });
                 let Ok(save) = save else { return };
                 if save.await.is_err() || editor.read_with(cx, |e, _| e.is_dirty()) {
                     return;
@@ -393,14 +461,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Closes every tab without asking (the window is going away).
-    pub fn close_all_tabs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        while !self.tabs.is_empty() {
-            let last = self.tabs.len() - 1;
-            self.remove_tab(last, window, cx);
-        }
-    }
-
     fn toggle_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(ix) = self.active else { return };
         let tab = &mut self.tabs[ix];
@@ -428,23 +488,42 @@ impl Workspace {
             // Find works on the source.
             self.toggle_preview(window, cx);
         }
-        let seed = self.active_editor().and_then(|e| e.read(cx).selected_text());
+        let seed = self
+            .active_editor()
+            .and_then(|e| e.read(cx).selected_text());
         self.find_bar_open = true;
-        self.find_bar.update(cx, |bar, cx| bar.show(seed, window, cx));
+        self.find_bar
+            .update(cx, |bar, cx| bar.show(seed, window, cx));
         self.sync_find_highlights(cx);
         cx.notify();
     }
 
     fn sync_find_highlights(&mut self, cx: &mut Context<Self>) {
-        let query = if self.find_bar_open { self.find_bar.read(cx).query(cx) } else { None };
+        let query = if self.find_bar_open {
+            self.find_bar.read(cx).query(cx)
+        } else {
+            None
+        };
         for (ix, tab) in self.tabs.iter().enumerate() {
-            let q = if Some(ix) == self.active { query.as_ref() } else { None };
+            let q = if Some(ix) == self.active {
+                query.as_ref()
+            } else {
+                None
+            };
             tab.editor.update(cx, |e, cx| e.set_search(q, cx));
         }
     }
 
-    fn on_find_bar_event(&mut self, _: &Entity<FindBar>, event: &FindBarEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(editor) = self.active_editor() else { return };
+    fn on_find_bar_event(
+        &mut self,
+        _: &Entity<FindBar>,
+        event: &FindBarEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(editor) = self.active_editor() else {
+            return;
+        };
         match event {
             FindBarEvent::QueryChanged(query) => {
                 editor.update(cx, |e, cx| {
@@ -494,10 +573,25 @@ impl Workspace {
         }
     }
 
-    fn on_search_event(&mut self, _: &Entity<SearchPanel>, event: &SearchPanelEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_search_event(
+        &mut self,
+        _: &Entity<SearchPanel>,
+        event: &SearchPanelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match event {
             SearchPanelEvent::Open { path, line, query } => {
-                self.open_path(path.clone(), OpenOptions { pin: true, line: Some(*line), column: None }, window, cx);
+                self.open_path(
+                    path.clone(),
+                    OpenOptions {
+                        pin: true,
+                        line: Some(*line),
+                        column: None,
+                    },
+                    window,
+                    cx,
+                );
                 if let Some(editor) = self.active_editor() {
                     let q = query.clone();
                     editor.update(cx, |e, cx| {
@@ -507,18 +601,29 @@ impl Workspace {
                     });
                 }
             }
-            SearchPanelEvent::ReplaceAll { query, replacement, files } => {
+            SearchPanelEvent::ReplaceAll {
+                query,
+                replacement,
+                files,
+            } => {
                 let mut on_disk = Vec::new();
                 for path in files {
-                    match self.tabs.iter().find(|t| t.editor.read(cx).path() == Some(path.as_path())) {
+                    match self
+                        .tabs
+                        .iter()
+                        .find(|t| t.editor.read(cx).path() == Some(path.as_path()))
+                    {
                         Some(tab) => {
-                            tab.editor.update(cx, |e, cx| e.replace_all(query, replacement, cx));
+                            tab.editor
+                                .update(cx, |e, cx| e.replace_all(query, replacement, cx));
                         }
                         None => on_disk.push(path.clone()),
                     }
                 }
                 for path in on_disk {
-                    if let Err(err) = editor_project::replace_in_file(&path, query, replacement, None) {
+                    if let Err(err) =
+                        editor_project::replace_in_file(&path, query, replacement, None)
+                    {
                         eprintln!("replace in {}: {err}", path.display());
                     }
                 }
@@ -532,10 +637,6 @@ impl Workspace {
                 cx.notify();
             }
         }
-    }
-
-    pub fn open_paths_in_tabs(&self, cx: &App) -> Vec<PathBuf> {
-        self.tabs.iter().filter_map(|t| t.editor.read(cx).path().map(Path::to_path_buf)).collect()
     }
 
     // ---------------------------------------------------------------------
@@ -578,7 +679,10 @@ impl Workspace {
                     .justify_end()
                     .px(px(10.))
                     .gap(px(2.))
-                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, _| this.should_move_window = true))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, _| this.should_move_window = true),
+                    )
                     .on_mouse_move(cx.listener(|this, _: &MouseMoveEvent, window, _| {
                         if this.should_move_window {
                             this.should_move_window = false;
@@ -590,13 +694,25 @@ impl Workspace {
                             window.titlebar_double_click();
                         }
                     })
-                    .child(sidebar_button("files", "icons/folder.svg", files_active, &palette, cx.listener(|this, _, _, cx| {
-                        this.sidebar_mode = SidebarMode::Files;
-                        cx.notify();
-                    })))
-                    .child(sidebar_button("search", "icons/search.svg", !files_active, &palette, cx.listener(|this, _, window, cx| {
-                        this.show_search(window, cx);
-                    }))),
+                    .child(sidebar_button(
+                        "files",
+                        "icons/folder.svg",
+                        files_active,
+                        &palette,
+                        cx.listener(|this, _, _, cx| {
+                            this.sidebar_mode = SidebarMode::Files;
+                            cx.notify();
+                        }),
+                    ))
+                    .child(sidebar_button(
+                        "search",
+                        "icons/search.svg",
+                        !files_active,
+                        &palette,
+                        cx.listener(|this, _, window, cx| {
+                            this.show_search(window, cx);
+                        }),
+                    )),
             )
             .when(files_active && !folder.is_empty(), |el| {
                 el.child(
@@ -613,10 +729,14 @@ impl Workspace {
     }
 
     fn show_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(search) = self.search_panel.clone() else { return };
+        let Some(search) = self.search_panel.clone() else {
+            return;
+        };
         self.sidebar_visible = true;
         self.sidebar_mode = SidebarMode::Search;
-        let seed = self.active_editor().and_then(|e| e.read(cx).selected_text());
+        let seed = self
+            .active_editor()
+            .and_then(|e| e.read(cx).selected_text());
         search.update(cx, |panel, cx| panel.show(seed, window, cx));
         cx.notify();
     }
@@ -649,10 +769,22 @@ impl Workspace {
                     .border_r_1()
                     .border_color(palette.border)
                     .text_size(px(12.5))
-                    .when(active, |el| el.bg(palette.tab_active_bg).text_color(palette.text))
-                    .when(!active, |el| el.text_color(palette.text_secondary).hover(|s| s.bg(palette.hover)))
+                    .when(active, |el| {
+                        el.bg(palette.tab_active_bg).text_color(palette.text)
+                    })
+                    .when(!active, |el| {
+                        el.text_color(palette.text_secondary)
+                            .hover(|s| s.bg(palette.hover))
+                    })
                     .when(!tab.pinned, |el| el.italic())
-                    .child(div().flex_1().overflow_hidden().text_ellipsis().whitespace_nowrap().child(title))
+                    .child(
+                        div()
+                            .flex_1()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .child(title),
+                    )
                     .child(
                         div()
                             .id(("close", id as usize))
@@ -663,12 +795,19 @@ impl Workspace {
                             .justify_center()
                             .rounded(px(4.))
                             .hover(|s| s.bg(palette.hover))
-                            .when(dirty, |el| el.child(div().size(px(7.)).rounded_full().bg(palette.modified_dot)))
+                            .when(dirty, |el| {
+                                el.child(div().size(px(7.)).rounded_full().bg(palette.modified_dot))
+                            })
                             .when(!dirty, |el| {
                                 el.invisible()
                                     .group_hover("tab", |s| s.visible())
                                     .when(active, |el| el.visible())
-                                    .child(svg().path("icons/close.svg").size(px(11.)).text_color(close_color))
+                                    .child(
+                                        svg()
+                                            .path("icons/close.svg")
+                                            .size(px(11.))
+                                            .text_color(close_color),
+                                    )
                             })
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 cx.stop_propagation();
@@ -685,16 +824,21 @@ impl Workspace {
                             this.activate(ix, window, cx);
                         }
                     }))
-                    .on_mouse_down(MouseButton::Middle, cx.listener(move |this, _, window, cx| {
-                        if let Some(ix) = this.tabs.iter().position(|t| t.id == id) {
-                            this.close_tab(ix, window, cx);
-                        }
-                    }))
+                    .on_mouse_down(
+                        MouseButton::Middle,
+                        cx.listener(move |this, _, window, cx| {
+                            if let Some(ix) = this.tabs.iter().position(|t| t.id == id) {
+                                this.close_tab(ix, window, cx);
+                            }
+                        }),
+                    )
                     .into_any_element()
             })
             .collect();
 
-        let preview_toggle = self.active_tab().and_then(|t| t.preview.as_ref().map(|_| t.show_preview));
+        let preview_toggle = self
+            .active_tab()
+            .and_then(|t| t.preview.as_ref().map(|_| t.show_preview));
         div()
             .id("tab-bar")
             .h(px(TITLE_BAR_HEIGHT))
@@ -705,29 +849,41 @@ impl Workspace {
             .border_b_1()
             .border_color(palette.border)
             .when(inset, |el| el.pl(px(78.)))
-            .child(div().id("tabs").flex().flex_1().min_w(px(0.)).overflow_x_scroll().children(tabs).child(
-                // Empty space after the tabs drags the window.
+            .child(
                 div()
-                    .id("tab-bar-drag")
+                    .id("tabs")
+                    .flex()
                     .flex_1()
-                    .min_w(px(40.))
-                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, _| this.should_move_window = true))
-                    .on_mouse_move(cx.listener(|this, _: &MouseMoveEvent, window, _| {
-                        if this.should_move_window {
-                            this.should_move_window = false;
-                            window.start_window_move();
-                        }
-                    }))
-                    .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
-                        if event.click_count() == 2 {
-                            if cfg!(target_os = "macos") {
-                                window.titlebar_double_click();
-                            } else {
-                                this.open_text("", window, cx);
-                            }
-                        }
-                    })),
-            ))
+                    .min_w(px(0.))
+                    .overflow_x_scroll()
+                    .children(tabs)
+                    .child(
+                        // Empty space after the tabs drags the window.
+                        div()
+                            .id("tab-bar-drag")
+                            .flex_1()
+                            .min_w(px(40.))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, _| this.should_move_window = true),
+                            )
+                            .on_mouse_move(cx.listener(|this, _: &MouseMoveEvent, window, _| {
+                                if this.should_move_window {
+                                    this.should_move_window = false;
+                                    window.start_window_move();
+                                }
+                            }))
+                            .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                                if event.click_count() == 2 {
+                                    if cfg!(target_os = "macos") {
+                                        window.titlebar_double_click();
+                                    } else {
+                                        this.open_text("", window, cx);
+                                    }
+                                }
+                            })),
+                    ),
+            )
             .when_some(preview_toggle, |el, showing| {
                 el.child(
                     div()
@@ -740,9 +896,20 @@ impl Workspace {
                         .text_size(px(12.))
                         .text_color(palette.text_secondary)
                         .hover(|s| s.text_color(palette.text))
-                        .child(svg().path(if showing { "icons/eye.svg" } else { "icons/file-text.svg" }).size(px(14.)).text_color(palette.text_secondary))
+                        .child(
+                            svg()
+                                .path(if showing {
+                                    "icons/eye.svg"
+                                } else {
+                                    "icons/file-text.svg"
+                                })
+                                .size(px(14.))
+                                .text_color(palette.text_secondary),
+                        )
                         .child(if showing { "Preview" } else { "Source" })
-                        .on_click(cx.listener(|this, _, window, cx| this.toggle_preview(window, cx))),
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.toggle_preview(window, cx)),
+                        ),
                 )
             })
     }
@@ -784,7 +951,11 @@ impl Workspace {
                 }
                 .into(),
             );
-            right.push(if editor.state.hard_tabs { "Tabs".into() } else { format!("Spaces: {}", editor.state.tab_width).into() });
+            right.push(if editor.state.hard_tabs {
+                "Tabs".into()
+            } else {
+                format!("Spaces: {}", editor.state.tab_width).into()
+            });
         }
         div()
             .h(px(STATUS_BAR_HEIGHT))
@@ -826,17 +997,50 @@ impl Workspace {
             .justify_center()
             .gap(px(14.))
             .bg(palette.editor_bg)
-            .child(svg().path("brand/logo-mark.svg").size(px(72.)).text_color(palette.text_tertiary.opacity(0.5)))
+            .child(
+                svg()
+                    .path("brand/logo-mark.svg")
+                    .size(px(72.))
+                    .text_color(palette.text_tertiary.opacity(0.5)),
+            )
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .gap(px(6.))
                     .text_size(px(13.))
-                    .child(hint(if cfg!(target_os = "macos") { "⌘T" } else { "Ctrl+T" }, "Go to file"))
-                    .child(hint(if cfg!(target_os = "macos") { "⇧⌘F" } else { "Ctrl+Shift+F" }, "Find in project"))
-                    .child(hint(if cfg!(target_os = "macos") { "⌘O" } else { "Ctrl+O" }, "Open file or folder"))
-                    .child(hint(if cfg!(target_os = "macos") { "⌘B" } else { "Ctrl+B" }, "Toggle sidebar")),
+                    .child(hint(
+                        if cfg!(target_os = "macos") {
+                            "⌘T"
+                        } else {
+                            "Ctrl+T"
+                        },
+                        "Go to file",
+                    ))
+                    .child(hint(
+                        if cfg!(target_os = "macos") {
+                            "⇧⌘F"
+                        } else {
+                            "Ctrl+Shift+F"
+                        },
+                        "Find in project",
+                    ))
+                    .child(hint(
+                        if cfg!(target_os = "macos") {
+                            "⌘O"
+                        } else {
+                            "Ctrl+O"
+                        },
+                        "Open file or folder",
+                    ))
+                    .child(hint(
+                        if cfg!(target_os = "macos") {
+                            "⌘B"
+                        } else {
+                            "Ctrl+B"
+                        },
+                        "Toggle sidebar",
+                    )),
             )
     }
 }
@@ -857,12 +1061,17 @@ fn sidebar_button(
         .rounded(px(6.))
         .when(active, |el| el.bg(palette.hover))
         .hover(|s| s.bg(palette.hover))
-        .child(svg().path(icon).size(px(15.)).text_color(if active { palette.text } else { palette.text_secondary }))
+        .child(svg().path(icon).size(px(15.)).text_color(if active {
+            palette.text
+        } else {
+            palette.text_secondary
+        }))
         .on_click(on_click)
 }
 
 impl Render for Workspace {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::trace_first_frame();
         let palette = theme::palette(cx).clone();
         let show_sidebar = self.sidebar_visible && self.root.is_some();
         let content: AnyElement = match self.active_tab() {
@@ -896,13 +1105,25 @@ impl Render for Workspace {
                 }
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &ToggleProjectSearch, window, cx| this.show_search(window, cx)))
+            .on_action(
+                cx.listener(|this, _: &ToggleProjectSearch, window, cx| {
+                    this.show_search(window, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &Find, window, cx| this.open_find_bar(window, cx)))
-            .on_action(cx.listener(|this, _: &FindNext, window, cx| this.find_step(false, window, cx)))
-            .on_action(cx.listener(|this, _: &FindPrevious, window, cx| this.find_step(true, window, cx)))
+            .on_action(
+                cx.listener(|this, _: &FindNext, window, cx| this.find_step(false, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &FindPrevious, window, cx| this.find_step(true, window, cx)),
+            )
             .on_action(cx.listener(|this, _: &UseSelectionForFind, window, cx| {
-                if let Some(text) = this.active_editor().and_then(|e| e.read(cx).selected_text()) {
-                    this.find_bar.update(cx, |bar, cx| bar.set_text(&text, window, cx));
+                if let Some(text) = this
+                    .active_editor()
+                    .and_then(|e| e.read(cx).selected_text())
+                {
+                    this.find_bar
+                        .update(cx, |bar, cx| bar.set_text(&text, window, cx));
                     this.sync_find_highlights(cx);
                 }
             }))
@@ -911,14 +1132,18 @@ impl Render for Workspace {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &RevealInSidebar, _, cx| {
-                let path = this.active_editor().and_then(|e| e.read(cx).path().map(Path::to_path_buf));
+                let path = this
+                    .active_editor()
+                    .and_then(|e| e.read(cx).path().map(Path::to_path_buf));
                 if let (Some(tree), Some(path)) = (this.file_tree.clone(), path) {
                     this.sidebar_visible = true;
                     this.sidebar_mode = SidebarMode::Files;
                     tree.update(cx, |t, cx| t.reveal(&path, cx));
                 }
             }))
-            .on_action(cx.listener(|this, _: &TogglePreview, window, cx| this.toggle_preview(window, cx)))
+            .on_action(
+                cx.listener(|this, _: &TogglePreview, window, cx| this.toggle_preview(window, cx)),
+            )
             .on_action(cx.listener(|this, _: &CloseTab, window, cx| {
                 if this.finder_open {
                     this.finder_open = false;
@@ -931,7 +1156,15 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &ReopenClosedTab, window, cx| {
                 if let Some(path) = this.closed.pop() {
-                    this.open_path(path, OpenOptions { pin: true, ..Default::default() }, window, cx);
+                    this.open_path(
+                        path,
+                        OpenOptions {
+                            pin: true,
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    );
                 }
             }))
             .on_action(cx.listener(|this, _: &NextTab, window, cx| {
@@ -962,20 +1195,24 @@ impl Render for Workspace {
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
                 if this.resizing_sidebar {
                     if event.pressed_button == Some(MouseButton::Left) {
-                        this.sidebar_width = f32::from(event.position.x).clamp(MIN_SIDEBAR, MAX_SIDEBAR);
+                        this.sidebar_width =
+                            f32::from(event.position.x).clamp(MIN_SIDEBAR, MAX_SIDEBAR);
                     } else {
                         this.resizing_sidebar = false;
                     }
                     cx.notify();
                 }
             }))
-            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                this.should_move_window = false;
-                if this.resizing_sidebar {
-                    this.resizing_sidebar = false;
-                    cx.notify();
-                }
-            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.should_move_window = false;
+                    if this.resizing_sidebar {
+                        this.resizing_sidebar = false;
+                        cx.notify();
+                    }
+                }),
+            )
             .when(show_sidebar, |el| {
                 el.child(self.render_sidebar(cx)).child(
                     // Resize handle straddling the sidebar border.
@@ -987,10 +1224,13 @@ impl Render for Workspace {
                         .h_full()
                         .w(px(6.))
                         .cursor(CursorStyle::ResizeLeftRight)
-                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                            this.resizing_sidebar = true;
-                            cx.stop_propagation();
-                        })),
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.resizing_sidebar = true;
+                                cx.stop_propagation();
+                            }),
+                        ),
                 )
             })
             .child(
@@ -1018,16 +1258,5 @@ impl Render for Workspace {
                         .child(finder),
                 )
             })
-    }
-}
-
-impl Workspace {
-    /// Used by `AppState` to route CLI requests.
-    pub fn focus_tab(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
-        self.activate_by_id(id, window, cx);
-    }
-
-    pub fn find_query(&self, cx: &App) -> Option<SearchQuery> {
-        self.find_bar.read(cx).query(cx)
     }
 }

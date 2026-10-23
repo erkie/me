@@ -44,10 +44,16 @@ pub enum Request {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Response {
     /// The request was handled. `ids` are the documents the CLI waits on.
-    Opened { ids: Vec<u64> },
+    Opened {
+        ids: Vec<u64>,
+    },
     /// A waited-on document was closed.
-    Closed { id: u64 },
-    Error { message: String },
+    Closed {
+        id: u64,
+    },
+    Error {
+        message: String,
+    },
     Pong,
 }
 
@@ -59,12 +65,16 @@ pub fn write_message<T: Serialize>(mut writer: impl Write, message: &T) -> io::R
 }
 
 /// Reads one message. `Ok(None)` at end of stream.
-pub fn read_message<T: for<'de> Deserialize<'de>>(reader: &mut impl BufRead) -> io::Result<Option<T>> {
+pub fn read_message<T: for<'de> Deserialize<'de>>(
+    reader: &mut impl BufRead,
+) -> io::Result<Option<T>> {
     let mut line = String::new();
     if reader.read_line(&mut line)? == 0 {
         return Ok(None);
     }
-    serde_json::from_str(&line).map(Some).map_err(io::Error::other)
+    serde_json::from_str(&line)
+        .map(Some)
+        .map_err(io::Error::other)
 }
 
 /// The socket path for the current user.
@@ -76,7 +86,8 @@ pub fn socket_path() -> PathBuf {
         .map(PathBuf::from)
         .filter(|p| p.is_dir())
         .unwrap_or_else(std::env::temp_dir);
-    base.join(format!("editor-{}", user_id())).join("editor.sock")
+    base.join(format!("editor-{}", user_id()))
+        .join("editor.sock")
 }
 
 #[cfg(unix)]
@@ -96,11 +107,19 @@ fn user_id() -> u32 {
 pub fn parse_path_arg(arg: &str, cwd: &Path) -> OpenPath {
     let absolute = |p: &str| {
         let p = Path::new(p);
-        if p.is_absolute() { p.to_path_buf() } else { cwd.join(p) }
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            cwd.join(p)
+        }
     };
     let whole = absolute(arg);
     if whole.exists() {
-        return OpenPath { path: normalize(&whole), line: None, column: None };
+        return OpenPath {
+            path: normalize(&whole),
+            line: None,
+            column: None,
+        };
     }
     let mut parts = arg.rsplitn(3, ':');
     let (last, mid, first) = (parts.next(), parts.next(), parts.next());
@@ -108,15 +127,27 @@ pub fn parse_path_arg(arg: &str, cwd: &Path) -> OpenPath {
         && let (Ok(line), Ok(col)) = (line.parse(), col.parse())
         && !path.is_empty()
     {
-        return OpenPath { path: normalize(&absolute(path)), line: Some(line), column: Some(col) };
+        return OpenPath {
+            path: normalize(&absolute(path)),
+            line: Some(line),
+            column: Some(col),
+        };
     }
     if let Some((path, line)) = arg.rsplit_once(':')
         && let Ok(line) = line.parse()
         && !path.is_empty()
     {
-        return OpenPath { path: normalize(&absolute(path)), line: Some(line), column: None };
+        return OpenPath {
+            path: normalize(&absolute(path)),
+            line: Some(line),
+            column: None,
+        };
     }
-    OpenPath { path: normalize(&whole), line: None, column: None }
+    OpenPath {
+        path: normalize(&whole),
+        line: None,
+        column: None,
+    }
 }
 
 /// Removes `.` and `..` components without touching the file system (the
@@ -157,7 +188,10 @@ mod unix {
     impl Client {
         pub fn connect(path: &Path) -> io::Result<Self> {
             let stream = UnixStream::connect(path)?;
-            Ok(Self { writer: stream.try_clone()?, reader: BufReader::new(stream) })
+            Ok(Self {
+                writer: stream.try_clone()?,
+                reader: BufReader::new(stream),
+            })
         }
 
         pub fn send(&mut self, request: &Request) -> io::Result<()> {
@@ -207,7 +241,10 @@ mod unix {
                 let _ = std::fs::remove_file(path);
             }
             let listener = UnixListener::bind(path).map_err(BindError::Io)?;
-            Ok(Self { listener, path: path.to_path_buf() })
+            Ok(Self {
+                listener,
+                path: path.to_path_buf(),
+            })
         }
 
         pub fn path(&self) -> &Path {
@@ -217,7 +254,10 @@ mod unix {
         /// Blocks until the next client connects.
         pub fn accept(&self) -> io::Result<Connection> {
             let (stream, _) = self.listener.accept()?;
-            Ok(Connection { writer: stream.try_clone()?, reader: BufReader::new(stream) })
+            Ok(Connection {
+                writer: stream.try_clone()?,
+                reader: BufReader::new(stream),
+            })
         }
     }
 
@@ -252,7 +292,11 @@ mod tests {
     fn wire_format_is_stable() {
         let req = Request::Open {
             cwd: "/w".into(),
-            paths: vec![OpenPath { path: "/w/a.md".into(), line: Some(3), column: None }],
+            paths: vec![OpenPath {
+                path: "/w/a.md".into(),
+                line: Some(3),
+                column: None,
+            }],
             stdin: None,
             wait: true,
             new_window: false,
@@ -262,7 +306,10 @@ mod tests {
             json,
             r#"{"type":"open","cwd":"/w","paths":[{"path":"/w/a.md","line":3}],"wait":true,"new_window":false}"#
         );
-        assert_eq!(serde_json::to_string(&Response::Closed { id: 7 }).unwrap(), r#"{"type":"closed","id":7}"#);
+        assert_eq!(
+            serde_json::to_string(&Response::Closed { id: 7 }).unwrap(),
+            r#"{"type":"closed","id":7}"#
+        );
     }
 
     #[test]
@@ -272,9 +319,15 @@ mod tests {
         std::fs::write(cwd.join("weird:12"), "").unwrap();
 
         let p = parse_path_arg("src/main.rs:12:5", cwd);
-        assert_eq!((p.path, p.line, p.column), (cwd.join("src/main.rs"), Some(12), Some(5)));
+        assert_eq!(
+            (p.path, p.line, p.column),
+            (cwd.join("src/main.rs"), Some(12), Some(5))
+        );
         let p = parse_path_arg("./a/../b.md:7", cwd);
-        assert_eq!((p.path, p.line, p.column), (cwd.join("b.md"), Some(7), None));
+        assert_eq!(
+            (p.path, p.line, p.column),
+            (cwd.join("b.md"), Some(7), None)
+        );
         let p = parse_path_arg("weird:12", cwd);
         assert_eq!((p.path, p.line), (cwd.join("weird:12"), None));
         let p = parse_path_arg("/abs/x.txt", cwd);
@@ -289,7 +342,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sock/editor.sock");
         let server = Server::bind(&path).unwrap();
-        assert!(matches!(Server::bind(&path), Err(BindError::AlreadyRunning)));
+        assert!(matches!(
+            Server::bind(&path),
+            Err(BindError::AlreadyRunning)
+        ));
 
         let handle = std::thread::spawn(move || {
             // The AlreadyRunning probe above left an empty connection in the

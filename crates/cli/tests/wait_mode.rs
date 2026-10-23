@@ -16,7 +16,9 @@ fn wait_mode_blocks_until_closed() {
     let app = std::thread::spawn(move || {
         let mut conn = server.accept().unwrap();
         let request = conn.recv().unwrap().unwrap();
-        let Request::Open { paths, wait, .. } = request else { panic!("expected open") };
+        let Request::Open { paths, wait, .. } = request else {
+            panic!("expected open")
+        };
         assert!(wait);
         assert_eq!(paths.len(), 1);
         assert_eq!(paths[0].line, Some(3));
@@ -34,7 +36,10 @@ fn wait_mode_blocks_until_closed() {
         .status()
         .unwrap();
     assert!(status.success());
-    assert!(start.elapsed() >= Duration::from_millis(300), "returned before the file was closed");
+    assert!(
+        start.elapsed() >= Duration::from_millis(300),
+        "returned before the file was closed"
+    );
     app.join().unwrap();
 }
 
@@ -88,7 +93,11 @@ fn launches_the_app_when_not_running() {
     let dir = tempfile::tempdir().unwrap();
     let marker = dir.path().join("launched");
     let script = dir.path().join("fake-app");
-    std::fs::write(&script, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+    )
+    .unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 

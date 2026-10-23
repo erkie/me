@@ -18,7 +18,11 @@ pub struct SearchQuery {
 
 impl SearchQuery {
     pub fn literal(pattern: impl Into<String>) -> Self {
-        Self { pattern: pattern.into(), case_sensitive: true, ..Default::default() }
+        Self {
+            pattern: pattern.into(),
+            case_sensitive: true,
+            ..Default::default()
+        }
     }
 
     pub fn whole_word(mut self, yes: bool) -> Self {
@@ -63,7 +67,10 @@ impl Matcher {
             let (before, after) = if query.regex {
                 (true, true)
             } else {
-                (is_word(query.pattern.chars().next()), is_word(query.pattern.chars().last()))
+                (
+                    is_word(query.pattern.chars().next()),
+                    is_word(query.pattern.chars().last()),
+                )
             };
             pattern = format!(
                 "{}(?:{pattern}){}",
@@ -139,7 +146,10 @@ impl Matcher {
                 |name| caps.group_info().to_index(PatternID::ZERO, name),
                 &mut text,
             );
-            out.push((rope.byte_to_char(m.start())..rope.byte_to_char(m.end()), text));
+            out.push((
+                rope.byte_to_char(m.start())..rope.byte_to_char(m.end()),
+                text,
+            ));
         }
         out
     }
@@ -147,14 +157,16 @@ impl Matcher {
     /// First match starting at or after `from`, wrapping around to the start.
     pub fn find_next(&self, rope: &Rope, from: usize) -> Option<Range<usize>> {
         let len = rope.len_chars();
-        self.first_in(rope, from.min(len)..len).or_else(|| self.first_in(rope, 0..from.min(len)))
+        self.first_in(rope, from.min(len)..len)
+            .or_else(|| self.first_in(rope, 0..from.min(len)))
     }
 
     /// Last match ending at or before `before`, wrapping around to the end.
     pub fn find_prev(&self, rope: &Rope, before: usize) -> Option<Range<usize>> {
         let len = rope.len_chars();
         let before = before.min(len);
-        self.last_in(rope, 0..before).or_else(|| self.last_in(rope, before..len))
+        self.last_in(rope, 0..before)
+            .or_else(|| self.last_in(rope, before..len))
     }
 
     fn first_in(&self, rope: &Rope, within: Range<usize>) -> Option<Range<usize>> {
@@ -193,18 +205,34 @@ mod tests {
         let rope = Rope::from_str("Foo foo food (foo)\nfoo");
         let m = SearchQuery::literal("foo").compile().unwrap();
         assert_eq!(m.find_all(&rope, 0..rope.len_chars(), 100).len(), 4);
-        let m = SearchQuery::literal("foo").whole_word(true).compile().unwrap();
-        assert_eq!(m.find_all(&rope, 0..rope.len_chars(), 100), vec![4..7, 14..17, 19..22]);
-        let m = SearchQuery::literal("foo").case_sensitive(false).whole_word(true).compile().unwrap();
+        let m = SearchQuery::literal("foo")
+            .whole_word(true)
+            .compile()
+            .unwrap();
+        assert_eq!(
+            m.find_all(&rope, 0..rope.len_chars(), 100),
+            vec![4..7, 14..17, 19..22]
+        );
+        let m = SearchQuery::literal("foo")
+            .case_sensitive(false)
+            .whole_word(true)
+            .compile()
+            .unwrap();
         assert_eq!(m.find_all(&rope, 0..rope.len_chars(), 100).len(), 4);
     }
 
     #[test]
     fn whole_word_with_punctuation_needles() {
         let rope = Rope::from_str("//! a\n//!\nx//!y -> b->c");
-        let m = SearchQuery::literal("//!").whole_word(true).compile().unwrap();
+        let m = SearchQuery::literal("//!")
+            .whole_word(true)
+            .compile()
+            .unwrap();
         assert_eq!(m.find_all(&rope, 0..rope.len_chars(), 100).len(), 3);
-        let m = SearchQuery::literal("->").whole_word(true).compile().unwrap();
+        let m = SearchQuery::literal("->")
+            .whole_word(true)
+            .compile()
+            .unwrap();
         assert_eq!(m.find_all(&rope, 0..rope.len_chars(), 100).len(), 2);
     }
 
@@ -212,7 +240,10 @@ mod tests {
     fn special_chars_are_literal() {
         let rope = Rope::from_str("a.b a*b (a.b)");
         let m = SearchQuery::literal("a.b").compile().unwrap();
-        assert_eq!(m.find_all(&rope, 0..rope.len_chars(), 100), vec![0..3, 9..12]);
+        assert_eq!(
+            m.find_all(&rope, 0..rope.len_chars(), 100),
+            vec![0..3, 9..12]
+        );
     }
 
     #[test]
@@ -229,8 +260,14 @@ mod tests {
     #[test]
     fn multibyte_offsets_are_chars() {
         let rope = Rope::from_str("åäö ÅÄÖ åäö");
-        let m = SearchQuery::literal("åäö").case_sensitive(false).compile().unwrap();
-        assert_eq!(m.find_all(&rope, 0..rope.len_chars(), 100), vec![0..3, 4..7, 8..11]);
+        let m = SearchQuery::literal("åäö")
+            .case_sensitive(false)
+            .compile()
+            .unwrap();
+        assert_eq!(
+            m.find_all(&rope, 0..rope.len_chars(), 100),
+            vec![0..3, 4..7, 8..11]
+        );
     }
 
     #[test]
@@ -243,7 +280,10 @@ mod tests {
     #[test]
     fn regex_replacement_expands_groups() {
         let rope = Rope::from_str("let a = 1;\nlet bb = 22;");
-        let m = SearchQuery::literal(r"let (\w+) = (?P<v>\d+)").regex(true).compile().unwrap();
+        let m = SearchQuery::literal(r"let (\w+) = (?P<v>\d+)")
+            .regex(true)
+            .compile()
+            .unwrap();
         let reps = m.replacements(&rope, 0..rope.len_chars(), "const $1: i32 = ${v}$$", true);
         assert_eq!(reps[0], (0..9, "const a: i32 = 1$".to_string()));
         assert_eq!(reps[1].1, "const bb: i32 = 22$");

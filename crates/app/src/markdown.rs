@@ -42,9 +42,12 @@ impl Focusable for MarkdownPreview {
 
 /// Whether a file should open as rendered markdown.
 pub fn is_markdown(path: &std::path::Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "md" | "markdown" | "mdx" | "mdown" | "mkd"))
+    path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+        matches!(
+            e.to_ascii_lowercase().as_str(),
+            "md" | "markdown" | "mdx" | "mdown" | "mkd"
+        )
+    })
 }
 
 impl MarkdownPreview {
@@ -66,10 +69,6 @@ impl MarkdownPreview {
             refresh: None,
             _subscription: subscription,
         }
-    }
-
-    pub fn editor(&self) -> &Entity<EditorView> {
-        &self.editor
     }
 
     fn schedule_refresh(&mut self, cx: &mut Context<Self>) {
@@ -154,11 +153,14 @@ impl Render for MarkdownPreview {
             .text_size(px(15.))
             .line_height(rems(1.6))
             .child(
-                div()
-                    .w_full()
-                    .flex()
-                    .justify_center()
-                    .child(div().w_full().max_w(px(820.)).px(px(40.)).py(px(32.)).child(view)),
+                div().w_full().flex().justify_center().child(
+                    div()
+                        .w_full()
+                        .max_w(px(820.))
+                        .px(px(40.))
+                        .py(px(32.))
+                        .child(view),
+                ),
             )
     }
 }

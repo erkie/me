@@ -37,7 +37,9 @@ pub fn walk_files(root: &Path, cancel: &AtomicBool, f: impl Fn(String) + Sync) {
         .hidden(false)
         .require_git(false)
         .filter_entry(|e| {
-            !e.file_name().to_str().is_some_and(|name| ALWAYS_HIDDEN.contains(&name))
+            !e.file_name()
+                .to_str()
+                .is_some_and(|name| ALWAYS_HIDDEN.contains(&name))
         })
         .build_parallel();
     walker.run(|| {
@@ -46,8 +48,12 @@ pub fn walk_files(root: &Path, cancel: &AtomicBool, f: impl Fn(String) + Sync) {
             if cancel.load(Ordering::Relaxed) {
                 return ignore::WalkState::Quit;
             }
-            let Ok(entry) = entry else { return ignore::WalkState::Continue };
-            if entry.file_type().is_some_and(|t| t.is_file() || t.is_symlink())
+            let Ok(entry) = entry else {
+                return ignore::WalkState::Continue;
+            };
+            if entry
+                .file_type()
+                .is_some_and(|t| t.is_file() || t.is_symlink())
                 && let Ok(rel) = entry.path().strip_prefix(root)
             {
                 let mut rel = rel.to_string_lossy().into_owned();
@@ -119,7 +125,9 @@ impl FileFinder {
             return;
         }
         let append = query.starts_with(self.query.as_str());
-        self.nucleo.pattern.reparse(0, query, CaseMatching::Smart, Normalization::Smart, append);
+        self.nucleo
+            .pattern
+            .reparse(0, query, CaseMatching::Smart, Normalization::Smart, append);
         self.query = query.to_string();
     }
 
@@ -143,10 +151,17 @@ impl FileFinder {
         let mut indices = Vec::new();
         for item in snapshot.matched_items(0..n) {
             indices.clear();
-            pattern.indices(item.matcher_columns[0].slice(..), &mut self.matcher, &mut indices);
+            pattern.indices(
+                item.matcher_columns[0].slice(..),
+                &mut self.matcher,
+                &mut indices,
+            );
             indices.sort_unstable();
             indices.dedup();
-            out.push(FileMatch { path: item.data.clone(), indices: indices.clone() });
+            out.push(FileMatch {
+                path: item.data.clone(),
+                indices: indices.clone(),
+            });
         }
         out
     }
@@ -191,8 +206,14 @@ mod tests {
     #[test]
     fn line_suffixes() {
         assert_eq!(split_line_suffix("src/a.rs"), ("src/a.rs", None));
-        assert_eq!(split_line_suffix("src/a.rs:12"), ("src/a.rs", Some((12, None))));
-        assert_eq!(split_line_suffix("src/a.rs:12:3"), ("src/a.rs", Some((12, Some(3)))));
+        assert_eq!(
+            split_line_suffix("src/a.rs:12"),
+            ("src/a.rs", Some((12, None)))
+        );
+        assert_eq!(
+            split_line_suffix("src/a.rs:12:3"),
+            ("src/a.rs", Some((12, Some(3))))
+        );
         assert_eq!(split_line_suffix("a:b"), ("a:b", None));
     }
 

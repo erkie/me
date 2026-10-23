@@ -23,7 +23,12 @@ impl Change {
         debug_assert!(start <= end);
         let text = text.into();
         let text_chars = text.chars().count();
-        Self { start, end, text, text_chars }
+        Self {
+            start,
+            end,
+            text,
+            text_chars,
+        }
     }
 
     pub fn insert(at: usize, text: impl Into<Arc<str>>) -> Self {
@@ -84,7 +89,9 @@ impl ChangeSet {
                     change.end = change.end.max(change.start);
                 }
                 // Two pure insertions at the same point: concatenate.
-                if change.start == change.end && prev.start == prev.end && prev.start == change.start
+                if change.start == change.end
+                    && prev.start == prev.end
+                    && prev.start == change.start
                 {
                     let prev = out.last_mut().unwrap();
                     let text: String = format!("{}{}", prev.text, change.text);

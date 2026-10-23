@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use gpui::{App, PromptLevel};
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub const BUNDLE_ID: &str = "com.erkie.editor";
 
 /// Content types we offer to become the default editor for.
@@ -77,7 +78,11 @@ fn cli_binary() -> Option<PathBuf> {
 
 pub fn install_cli(cx: &mut App) {
     let Some(cli) = cli_binary() else {
-        notify("Could not find the bundled 'editor' command.".into(), None, cx);
+        notify(
+            "Could not find the bundled 'editor' command.".into(),
+            None,
+            cx,
+        );
         return;
     };
     let result = install_cli_at(&cli);
@@ -113,12 +118,16 @@ fn install_cli_at(cli: &std::path::Path) -> Result<PathBuf, String> {
             "do shell script \"mkdir -p /usr/local/bin && ln -sf '{}' /usr/local/bin/editor\" with administrator privileges",
             cli.display()
         );
-        let status = std::process::Command::new("osascript").args(["-e", &script]).status();
+        let status = std::process::Command::new("osascript")
+            .args(["-e", &script])
+            .status();
         if status.is_ok_and(|s| s.success()) {
             return Ok(system);
         }
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from).ok_or("HOME is not set")?;
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or("HOME is not set")?;
     let user = home.join(".local/bin/editor");
     link(&user).map_err(|e| e.to_string())?;
     Ok(user)
@@ -131,7 +140,11 @@ pub fn make_default_editor(cx: &mut App) {
             Some("You can change this per file type in Finder's Get Info → Open With.".into()),
             cx,
         ),
-        Err(err) => notify("Could not register as the default editor.".into(), Some(err), cx),
+        Err(err) => notify(
+            "Could not register as the default editor.".into(),
+            Some(err),
+            cx,
+        ),
     }
 }
 
@@ -170,7 +183,9 @@ fn register_default() -> Result<usize, String> {
         }
     }
     if ok == 0 {
-        return Err(format!("Launch Services returned error {last_error}. Is Editor.app in /Applications?"));
+        return Err(format!(
+            "Launch Services returned error {last_error}. Is Editor.app in /Applications?"
+        ));
     }
     Ok(ok)
 }
@@ -183,7 +198,11 @@ fn register_default() -> Result<usize, String> {
         .args(MIME_TYPES)
         .status()
         .map_err(|e| format!("xdg-mime: {e}"))?;
-    if status.success() { Ok(MIME_TYPES.len()) } else { Err(format!("xdg-mime exited with {status}")) }
+    if status.success() {
+        Ok(MIME_TYPES.len())
+    } else {
+        Err(format!("xdg-mime exited with {status}"))
+    }
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]

@@ -121,7 +121,13 @@ fn run(args: Args) -> io::Result<ExitCode> {
     } else {
         None
     };
-    let request = Request::Open { cwd, paths, stdin, wait: args.wait, new_window: args.new_window };
+    let request = Request::Open {
+        cwd,
+        paths,
+        stdin,
+        wait: args.wait,
+        new_window: args.new_window,
+    };
     send(request, args.wait)
 }
 
@@ -164,7 +170,9 @@ fn send(request: Request, wait: bool) -> io::Result<ExitCode> {
             Some(Response::Pong) => {}
             None => {
                 return if wait && !waiting.is_empty() {
-                    Err(io::Error::other("the editor quit before the file was closed"))
+                    Err(io::Error::other(
+                        "the editor quit before the file was closed",
+                    ))
                 } else {
                     Ok(ExitCode::SUCCESS)
                 };
@@ -194,7 +202,9 @@ fn connect_with_retry(socket: &Path, timeout: Duration) -> io::Result<editor_ipc
 /// line. Wait mode is not supported there yet.
 #[cfg(not(unix))]
 fn send(request: Request, _wait: bool) -> io::Result<ExitCode> {
-    let Request::Open { paths, .. } = request else { unreachable!() };
+    let Request::Open { paths, .. } = request else {
+        unreachable!()
+    };
     let app = find_app()?;
     let mut cmd = Command::new(app);
     for p in paths {
@@ -215,7 +225,10 @@ fn launch_app() -> io::Result<()> {
             .args(["--args", "--from-cli"])
             .status()?;
         if !status.success() {
-            return Err(io::Error::other(format!("could not launch {}", bundle.display())));
+            return Err(io::Error::other(format!(
+                "could not launch {}",
+                bundle.display()
+            )));
         }
         return Ok(());
     }
@@ -230,14 +243,21 @@ fn find_app() -> io::Result<PathBuf> {
     }
     let exe = env::current_exe()?;
     let exe = exe.canonicalize().unwrap_or(exe);
-    let name = if cfg!(windows) { "editor-app.exe" } else { "editor-app" };
+    let name = if cfg!(windows) {
+        "editor-app.exe"
+    } else {
+        "editor-app"
+    };
     let sibling = exe.with_file_name(name);
     if sibling.exists() {
         return Ok(sibling);
     }
     Err(io::Error::new(
         io::ErrorKind::NotFound,
-        format!("could not find the editor app (looked for {})", sibling.display()),
+        format!(
+            "could not find the editor app (looked for {})",
+            sibling.display()
+        ),
     ))
 }
 
@@ -250,8 +270,10 @@ fn find_bundle() -> Option<PathBuf> {
     }
     let exe = env::current_exe().ok()?;
     let exe = exe.canonicalize().unwrap_or(exe);
-    if let Some(bundle) =
-        exe.ancestors().find(|p| p.extension().is_some_and(|e| e == "app")).map(Path::to_path_buf)
+    if let Some(bundle) = exe
+        .ancestors()
+        .find(|p| p.extension().is_some_and(|e| e == "app"))
+        .map(Path::to_path_buf)
     {
         return Some(bundle);
     }
@@ -265,7 +287,10 @@ fn find_bundle() -> Option<PathBuf> {
 
 fn spawn_detached(app: &Path) -> io::Result<()> {
     let mut cmd = Command::new(app);
-    cmd.arg("--from-cli").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    cmd.arg("--from-cli")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -287,7 +312,11 @@ mod tests {
     fn flags_and_paths() {
         assert_eq!(
             parse(&["-w", ".", "b.md:3"]),
-            Parsed::Run(Args { wait: true, paths: vec![".".into(), "b.md:3".into()], ..Default::default() })
+            Parsed::Run(Args {
+                wait: true,
+                paths: vec![".".into(), "b.md:3".into()],
+                ..Default::default()
+            })
         );
         assert_eq!(
             parse(&["-wn", "-", "--", "-weird"]),

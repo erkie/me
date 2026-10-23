@@ -42,13 +42,28 @@ pub enum Autoscroll {
     Center,
 }
 
+/// Scroll offset. Vertical is f64: in a multi-million-line file the offset
+/// is tens of millions of pixels, beyond what f32 represents exactly.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ScrollPosition {
+    pub x: Pixels,
+    pub y: f64,
+}
+
 #[derive(Clone, Debug)]
 enum Drag {
     /// Plain or shift/cmd-click drag. `origin` is the range the first click
     /// selected (a char, word or line depending on click count).
-    Select { origin: Range<usize>, granularity: Granularity, others: Vec<Selection> },
+    Select {
+        origin: Range<usize>,
+        granularity: Granularity,
+        others: Vec<Selection>,
+    },
     /// Option-drag column selection from a (line, visual column) corner.
-    Column { anchor: (usize, usize), others: Vec<Selection> },
+    Column {
+        anchor: (usize, usize),
+        others: Vec<Selection>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,7 +86,7 @@ pub struct EditorView {
     syntax: Option<Syntax>,
     parse_task: Option<Task<()>>,
     load_task: Option<Task<()>>,
-    pub(crate) scroll: Point<Pixels>,
+    pub(crate) scroll: ScrollPosition,
     pub(crate) autoscroll: Option<Autoscroll>,
     pub(crate) layout: Option<LayoutSnapshot>,
     drag: Option<Drag>,
@@ -117,7 +132,7 @@ impl EditorView {
             syntax: None,
             parse_task: None,
             load_task: None,
-            scroll: Point::default(),
+            scroll: ScrollPosition::default(),
             autoscroll: None,
             layout: None,
             drag: None,
@@ -173,12 +188,13 @@ impl EditorView {
     }
 
     fn finish_load(&mut self, loaded: Loaded, cx: &mut Context<Self>) {
+        crate::trace_phase("document loaded");
         self.loading = false;
         self.notice = loaded.notice.map(SharedString::from);
         self.read_only = loaded.read_only;
         self.disk_mtime = loaded.mtime;
         self.state = EditorState::new(loaded.doc);
-        self.scroll = Point::default();
+        self.scroll = ScrollPosition::default();
         if let Some(path) = &self.path
             && self.state.doc.len_bytes() <= DEFAULT_MAX_FILE_SIZE
             && let Some(language) = language_for_path(path).and_then(|def| def.load())
@@ -264,7 +280,12 @@ impl EditorView {
         self.did_change(cx);
     }
 
-    pub fn replace_all(&mut self, query: &SearchQuery, replacement: &str, cx: &mut Context<Self>) -> usize {
+    pub fn replace_all(
+        &mut self,
+        query: &SearchQuery,
+        replacement: &str,
+        cx: &mut Context<Self>,
+    ) -> usize {
         if self.read_only {
             return 0;
         }
@@ -330,7 +351,12 @@ impl EditorView {
             let tree = cx
                 .background_executor()
                 .spawn(async move {
-                    editor_syntax::parse(&language, &rope, old_tree.as_ref(), Duration::from_secs(3))
+                    editor_syntax::parse(
+                        &language,
+                        &rope,
+                        old_tree.as_ref(),
+                        Duration::from_secs(3),
+                    )
                 })
                 .await;
             this.update(cx, |this, cx| {
@@ -351,7 +377,9 @@ impl EditorView {
         let epoch = self.blink_epoch;
         self.blink_task = Some(cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor().timer(Duration::from_millis(530)).await;
+                cx.background_executor()
+                    .timer(Duration::from_millis(530))
+                    .await;
                 let keep_going = this
                     .update(cx, |this, cx| {
                         if this.blink_epoch != epoch {
@@ -395,7 +423,8 @@ impl EditorView {
         let lines = self.page_lines();
         let delta = if down { lines } else { -lines };
         if let Some(layout) = &self.layout {
-            self.scroll.y = (self.scroll.y + layout.line_height * delta as f32).max(px(0.));
+            let line_height = f32::from(layout.line_height) as f64;
+            self.scroll.y = (self.scroll.y + line_height * delta as f64).max(0.);
         }
         self.motion(cx, |s| s.move_vertically(delta, extend));
     }
@@ -410,22 +439,37 @@ impl EditorView {
             per_selection: clip.per_selection.clone(),
             whole_lines: clip.whole_lines,
         };
-        cx.write_to_clipboard(ClipboardItem::new_string_with_json_metadata(clip.text.clone(), meta));
+        cx.write_to_clipboard(ClipboardItem::new_string_with_json_metadata(
+            clip.text.clone(),
+            meta,
+        ));
         clip
     }
 
     fn paste(&mut self, cx: &mut Context<Self>) {
-        let Some(item) = cx.read_from_clipboard() else { return };
+        let Some(item) = cx.read_from_clipboard() else {
+            return;
+        };
         let Some(text) = item.text() else { return };
         let meta: Option<ClipboardMeta> = item.entries().iter().find_map(|e| match e {
             gpui::ClipboardEntry::String(s) => s.metadata_json(),
             _ => None,
         });
         let clip = match meta {
-            Some(meta) if meta.per_selection.concat().len() + meta.per_selection.len() >= text.len() => {
-                ClipboardText { text, per_selection: meta.per_selection, whole_lines: meta.whole_lines }
+            Some(meta)
+                if meta.per_selection.concat().len() + meta.per_selection.len() >= text.len() =>
+            {
+                ClipboardText {
+                    text,
+                    per_selection: meta.per_selection,
+                    whole_lines: meta.whole_lines,
+                }
             }
-            _ => ClipboardText { text: text.clone(), per_selection: vec![text], whole_lines: false },
+            _ => ClipboardText {
+                text: text.clone(),
+                per_selection: vec![text],
+                whole_lines: false,
+            },
         };
         self.edit(cx, |s| s.paste(&clip));
     }
@@ -434,7 +478,11 @@ impl EditorView {
     // Saving
     // ---------------------------------------------------------------------
 
-    pub fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Task<anyhow::Result<()>> {
+    pub fn save(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<anyhow::Result<()>> {
         match self.path.clone() {
             Some(path) => {
                 let result = self.save_to(&path, cx);
@@ -444,17 +492,27 @@ impl EditorView {
         }
     }
 
-    pub fn save_as(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Task<anyhow::Result<()>> {
+    pub fn save_as(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<anyhow::Result<()>> {
         let dir = self
             .path
             .as_ref()
             .and_then(|p| p.parent().map(Path::to_path_buf))
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("/"));
-        let suggested = self.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned());
+        let suggested = self
+            .path
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned());
         let rx = cx.prompt_for_new_path(&dir, suggested.as_deref());
         cx.spawn(async move |this, cx| {
-            let Ok(Ok(Some(path))) = rx.await else { return Ok(()) };
+            let Ok(Ok(Some(path))) = rx.await else {
+                return Ok(());
+            };
             this.update(cx, |this, cx| {
                 this.save_to(&path, cx)?;
                 this.path = Some(path.clone());
@@ -485,7 +543,9 @@ impl EditorView {
 
     /// Reloads from disk if the file changed there and has no unsaved edits.
     pub fn reload_if_changed(&mut self, cx: &mut Context<Self>) {
-        let Some(path) = self.path.clone() else { return };
+        let Some(path) = self.path.clone() else {
+            return;
+        };
         let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
         if mtime.is_none() || mtime == self.disk_mtime || self.is_dirty() {
             return;
@@ -531,8 +591,15 @@ impl EditorView {
             } else {
                 Vec::new()
             };
-            self.drag = Some(Drag::Column { anchor: (hit.line, hit.visual_col), others: others.clone() });
-            self.apply_column(others, (hit.line, hit.visual_col), (hit.line, hit.visual_col));
+            self.drag = Some(Drag::Column {
+                anchor: (hit.line, hit.visual_col),
+                others: others.clone(),
+            });
+            self.apply_column(
+                others,
+                (hit.line, hit.visual_col),
+                (hit.line, hit.visual_col),
+            );
             self.did_move(cx);
             return;
         }
@@ -567,24 +634,44 @@ impl EditorView {
             if click_count == 1 {
                 self.state.toggle_cursor(hit.pos);
                 self.did_move(cx);
-                let others = self.state.selections().iter().copied().filter(|s| s.head != hit.pos).collect();
-                self.drag = Some(Drag::Select { origin, granularity, others });
+                let others = self
+                    .state
+                    .selections()
+                    .iter()
+                    .copied()
+                    .filter(|s| s.head != hit.pos)
+                    .collect();
+                self.drag = Some(Drag::Select {
+                    origin,
+                    granularity,
+                    others,
+                });
                 return;
             }
             self.state.selections().iter().copied().collect()
         } else {
             Vec::new()
         };
-        self.drag = Some(Drag::Select { origin: origin.clone(), granularity, others: others.clone() });
+        self.drag = Some(Drag::Select {
+            origin: origin.clone(),
+            granularity,
+            others: others.clone(),
+        });
         self.apply_drag_select(others, origin.clone(), origin, granularity);
         self.did_move(cx);
     }
 
     pub(crate) fn mouse_drag(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
-        let (Some(drag), Some(layout)) = (self.drag.clone(), &self.layout) else { return };
+        let (Some(drag), Some(layout)) = (self.drag.clone(), &self.layout) else {
+            return;
+        };
         let hit = layout.hit(position, &self.state);
         match drag {
-            Drag::Select { origin, granularity, others } => {
+            Drag::Select {
+                origin,
+                granularity,
+                others,
+            } => {
                 let target = match granularity {
                     Granularity::Char => hit.pos..hit.pos,
                     Granularity::Word => self.state.word_range_at(hit.pos),
@@ -607,7 +694,13 @@ impl EditorView {
         self.drag.is_some()
     }
 
-    fn apply_drag_select(&mut self, others: Vec<Selection>, origin: Range<usize>, target: Range<usize>, _g: Granularity) {
+    fn apply_drag_select(
+        &mut self,
+        others: Vec<Selection>,
+        origin: Range<usize>,
+        target: Range<usize>,
+        _g: Granularity,
+    ) {
         let sel = if target.start < origin.start {
             Selection::new(origin.end, target.start)
         } else {
@@ -619,7 +712,12 @@ impl EditorView {
         self.state.set_selections(SelectionSet::new(sels, primary));
     }
 
-    fn apply_column(&mut self, others: Vec<Selection>, anchor: (usize, usize), head: (usize, usize)) {
+    fn apply_column(
+        &mut self,
+        others: Vec<Selection>,
+        anchor: (usize, usize),
+        head: (usize, usize),
+    ) {
         self.state.select_column(anchor, head);
         if !others.is_empty() {
             let mut sels = others;
@@ -632,7 +730,7 @@ impl EditorView {
 
     pub(crate) fn scroll_by(&mut self, delta: Point<Pixels>, cx: &mut Context<Self>) {
         self.scroll.x = (self.scroll.x - delta.x).max(px(0.));
-        self.scroll.y = (self.scroll.y - delta.y).max(px(0.));
+        self.scroll.y = (self.scroll.y - f32::from(delta.y) as f64).max(0.);
         self.autoscroll = None;
         cx.notify();
     }
@@ -662,11 +760,17 @@ impl EditorView {
             let start = self.utf16_to_char(r.start);
             let end = self.utf16_to_char(r.end);
             let primary = self.state.selections().primary();
-            let (before, after) = (primary.start().saturating_sub(start), end.saturating_sub(primary.end()));
+            let (before, after) = (
+                primary.start().saturating_sub(start),
+                end.saturating_sub(primary.end()),
+            );
             self.state
                 .selections()
                 .iter()
-                .map(|s| s.start().saturating_sub(before)..(s.end() + after).min(self.state.doc.len_chars()))
+                .map(|s| {
+                    s.start().saturating_sub(before)
+                        ..(s.end() + after).min(self.state.doc.len_chars())
+                })
                 .collect()
         } else {
             self.state.selections().iter().map(|s| s.range()).collect()
@@ -702,9 +806,17 @@ impl gpui::EntityInputHandler for EditorView {
         })
     }
 
-    fn marked_text_range(&self, _window: &mut Window, _cx: &mut Context<Self>) -> Option<Range<usize>> {
+    fn marked_text_range(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Range<usize>> {
         let marked = self.marked.as_ref()?;
-        let primary = self.state.selections().primary_index().min(marked.len().saturating_sub(1));
+        let primary = self
+            .state
+            .selections()
+            .primary_index()
+            .min(marked.len().saturating_sub(1));
         let r = marked.get(primary)?;
         Some(self.char_to_utf16(r.start)..self.char_to_utf16(r.end))
     }
@@ -763,7 +875,11 @@ impl gpui::EntityInputHandler for EditorView {
             syntax.edit(&edits);
         }
         self.schedule_parse(cx);
-        self.marked = if text.is_empty() { None } else { Some(inserted) };
+        self.marked = if text.is_empty() {
+            None
+        } else {
+            Some(inserted)
+        };
         self.did_move(cx);
     }
 
@@ -777,7 +893,10 @@ impl gpui::EntityInputHandler for EditorView {
         let layout = self.layout.as_ref()?;
         let start = self.utf16_to_char(range_utf16.start);
         let origin = layout.point_for_pos(start, &self.state)?;
-        Some(Bounds::new(origin, gpui::size(layout.char_width, layout.line_height)))
+        Some(Bounds::new(
+            origin,
+            gpui::size(layout.char_width, layout.line_height),
+        ))
     }
 
     fn character_index_for_point(
@@ -807,75 +926,182 @@ impl Render for EditorView {
             .overflow_hidden()
             .cursor(gpui::CursorStyle::IBeam)
             // Movement
-            .on_action(cx.listener(|this, _: &MoveLeft, _, cx| this.motion(cx, |s| s.move_left(false))))
-            .on_action(cx.listener(|this, _: &MoveRight, _, cx| this.motion(cx, |s| s.move_right(false))))
+            .on_action(
+                cx.listener(|this, _: &MoveLeft, _, cx| this.motion(cx, |s| s.move_left(false))),
+            )
+            .on_action(
+                cx.listener(|this, _: &MoveRight, _, cx| this.motion(cx, |s| s.move_right(false))),
+            )
             .on_action(cx.listener(|this, _: &MoveUp, _, cx| this.motion(cx, |s| s.move_up(false))))
-            .on_action(cx.listener(|this, _: &MoveDown, _, cx| this.motion(cx, |s| s.move_down(false))))
-            .on_action(cx.listener(|this, _: &MoveWordLeft, _, cx| this.motion(cx, |s| s.move_word_left(false))))
-            .on_action(cx.listener(|this, _: &MoveWordRight, _, cx| this.motion(cx, |s| s.move_word_right(false))))
-            .on_action(cx.listener(|this, _: &MoveLineStart, _, cx| this.motion(cx, |s| s.move_line_start(false))))
-            .on_action(cx.listener(|this, _: &MoveLineEnd, _, cx| this.motion(cx, |s| s.move_line_end(false))))
-            .on_action(cx.listener(|this, _: &MoveDocStart, _, cx| this.motion(cx, |s| s.move_doc_start(false))))
-            .on_action(cx.listener(|this, _: &MoveDocEnd, _, cx| this.motion(cx, |s| s.move_doc_end(false))))
+            .on_action(
+                cx.listener(|this, _: &MoveDown, _, cx| this.motion(cx, |s| s.move_down(false))),
+            )
+            .on_action(cx.listener(|this, _: &MoveWordLeft, _, cx| {
+                this.motion(cx, |s| s.move_word_left(false))
+            }))
+            .on_action(cx.listener(|this, _: &MoveWordRight, _, cx| {
+                this.motion(cx, |s| s.move_word_right(false))
+            }))
+            .on_action(cx.listener(|this, _: &MoveLineStart, _, cx| {
+                this.motion(cx, |s| s.move_line_start(false))
+            }))
+            .on_action(cx.listener(|this, _: &MoveLineEnd, _, cx| {
+                this.motion(cx, |s| s.move_line_end(false))
+            }))
+            .on_action(cx.listener(|this, _: &MoveDocStart, _, cx| {
+                this.motion(cx, |s| s.move_doc_start(false))
+            }))
+            .on_action(
+                cx.listener(|this, _: &MoveDocEnd, _, cx| {
+                    this.motion(cx, |s| s.move_doc_end(false))
+                }),
+            )
             .on_action(cx.listener(|this, _: &PageUp, _, cx| this.page(false, false, cx)))
             .on_action(cx.listener(|this, _: &PageDown, _, cx| this.page(true, false, cx)))
-            .on_action(cx.listener(|this, _: &SelectLeft, _, cx| this.motion(cx, |s| s.move_left(true))))
-            .on_action(cx.listener(|this, _: &SelectRight, _, cx| this.motion(cx, |s| s.move_right(true))))
-            .on_action(cx.listener(|this, _: &SelectUp, _, cx| this.motion(cx, |s| s.move_up(true))))
-            .on_action(cx.listener(|this, _: &SelectDown, _, cx| this.motion(cx, |s| s.move_down(true))))
-            .on_action(cx.listener(|this, _: &SelectWordLeft, _, cx| this.motion(cx, |s| s.move_word_left(true))))
-            .on_action(cx.listener(|this, _: &SelectWordRight, _, cx| this.motion(cx, |s| s.move_word_right(true))))
-            .on_action(cx.listener(|this, _: &SelectLineStart, _, cx| this.motion(cx, |s| s.move_line_start(true))))
-            .on_action(cx.listener(|this, _: &SelectLineEnd, _, cx| this.motion(cx, |s| s.move_line_end(true))))
-            .on_action(cx.listener(|this, _: &SelectDocStart, _, cx| this.motion(cx, |s| s.move_doc_start(true))))
-            .on_action(cx.listener(|this, _: &SelectDocEnd, _, cx| this.motion(cx, |s| s.move_doc_end(true))))
+            .on_action(
+                cx.listener(|this, _: &SelectLeft, _, cx| this.motion(cx, |s| s.move_left(true))),
+            )
+            .on_action(
+                cx.listener(|this, _: &SelectRight, _, cx| this.motion(cx, |s| s.move_right(true))),
+            )
+            .on_action(
+                cx.listener(|this, _: &SelectUp, _, cx| this.motion(cx, |s| s.move_up(true))),
+            )
+            .on_action(
+                cx.listener(|this, _: &SelectDown, _, cx| this.motion(cx, |s| s.move_down(true))),
+            )
+            .on_action(cx.listener(|this, _: &SelectWordLeft, _, cx| {
+                this.motion(cx, |s| s.move_word_left(true))
+            }))
+            .on_action(cx.listener(|this, _: &SelectWordRight, _, cx| {
+                this.motion(cx, |s| s.move_word_right(true))
+            }))
+            .on_action(cx.listener(|this, _: &SelectLineStart, _, cx| {
+                this.motion(cx, |s| s.move_line_start(true))
+            }))
+            .on_action(cx.listener(|this, _: &SelectLineEnd, _, cx| {
+                this.motion(cx, |s| s.move_line_end(true))
+            }))
+            .on_action(cx.listener(|this, _: &SelectDocStart, _, cx| {
+                this.motion(cx, |s| s.move_doc_start(true))
+            }))
+            .on_action(cx.listener(|this, _: &SelectDocEnd, _, cx| {
+                this.motion(cx, |s| s.move_doc_end(true))
+            }))
             .on_action(cx.listener(|this, _: &SelectPageUp, _, cx| this.page(false, true, cx)))
             .on_action(cx.listener(|this, _: &SelectPageDown, _, cx| this.page(true, true, cx)))
             // Editing
             .on_action(cx.listener(|this, _: &Backspace, _, cx| this.edit(cx, |s| s.backspace())))
             .on_action(cx.listener(|this, _: &Delete, _, cx| this.edit(cx, |s| s.delete_forward())))
-            .on_action(cx.listener(|this, _: &DeleteWordLeft, _, cx| this.edit(cx, |s| s.delete_word_left())))
-            .on_action(cx.listener(|this, _: &DeleteWordRight, _, cx| this.edit(cx, |s| s.delete_word_right())))
-            .on_action(cx.listener(|this, _: &DeleteToLineStart, _, cx| this.edit(cx, |s| s.delete_to_line_start())))
-            .on_action(cx.listener(|this, _: &DeleteToLineEnd, _, cx| this.edit(cx, |s| s.delete_to_line_end())))
+            .on_action(cx.listener(|this, _: &DeleteWordLeft, _, cx| {
+                this.edit(cx, |s| s.delete_word_left())
+            }))
+            .on_action(cx.listener(|this, _: &DeleteWordRight, _, cx| {
+                this.edit(cx, |s| s.delete_word_right())
+            }))
+            .on_action(cx.listener(|this, _: &DeleteToLineStart, _, cx| {
+                this.edit(cx, |s| s.delete_to_line_start())
+            }))
+            .on_action(cx.listener(|this, _: &DeleteToLineEnd, _, cx| {
+                this.edit(cx, |s| s.delete_to_line_end())
+            }))
             .on_action(cx.listener(|this, _: &Newline, _, cx| this.edit(cx, |s| s.newline())))
             .on_action(cx.listener(|this, _: &Tab, _, cx| this.edit(cx, |s| s.tab())))
             .on_action(cx.listener(|this, _: &Outdent, _, cx| this.edit(cx, |s| s.outdent_lines())))
-            .on_action(cx.listener(|this, _: &IndentLines, _, cx| this.edit(cx, |s| s.indent_lines())))
-            .on_action(cx.listener(|this, _: &OutdentLines, _, cx| this.edit(cx, |s| s.outdent_lines())))
+            .on_action(
+                cx.listener(|this, _: &IndentLines, _, cx| this.edit(cx, |s| s.indent_lines())),
+            )
+            .on_action(
+                cx.listener(|this, _: &OutdentLines, _, cx| this.edit(cx, |s| s.outdent_lines())),
+            )
             .on_action(cx.listener(|this, _: &ToggleComment, _, cx| {
-                let token = this.syntax.as_ref().and_then(|s| s.language().def.line_comment).unwrap_or("#");
+                let token = this
+                    .syntax
+                    .as_ref()
+                    .and_then(|s| s.language().def.line_comment)
+                    .unwrap_or("#");
                 this.edit(cx, |s| s.toggle_line_comment(token))
             }))
-            .on_action(cx.listener(|this, _: &DuplicateLine, _, cx| this.edit(cx, |s| s.duplicate())))
-            .on_action(cx.listener(|this, _: &MoveLineUp, _, cx| this.edit(cx, |s| s.move_lines(false))))
-            .on_action(cx.listener(|this, _: &MoveLineDown, _, cx| this.edit(cx, |s| s.move_lines(true))))
-            .on_action(cx.listener(|this, _: &DeleteLine, _, cx| this.edit(cx, |s| s.delete_lines())))
-            .on_action(cx.listener(|this, _: &Undo, _, cx| this.edit(cx, |s| { s.undo(); })))
-            .on_action(cx.listener(|this, _: &Redo, _, cx| this.edit(cx, |s| { s.redo(); })))
-            .on_action(cx.listener(|this, _: &Copy, _, cx| { this.copy(cx); }))
+            .on_action(
+                cx.listener(|this, _: &DuplicateLine, _, cx| this.edit(cx, |s| s.duplicate())),
+            )
+            .on_action(
+                cx.listener(|this, _: &MoveLineUp, _, cx| this.edit(cx, |s| s.move_lines(false))),
+            )
+            .on_action(
+                cx.listener(|this, _: &MoveLineDown, _, cx| this.edit(cx, |s| s.move_lines(true))),
+            )
+            .on_action(
+                cx.listener(|this, _: &DeleteLine, _, cx| this.edit(cx, |s| s.delete_lines())),
+            )
+            .on_action(cx.listener(|this, _: &Undo, _, cx| {
+                this.edit(cx, |s| {
+                    s.undo();
+                })
+            }))
+            .on_action(cx.listener(|this, _: &Redo, _, cx| {
+                this.edit(cx, |s| {
+                    s.redo();
+                })
+            }))
+            .on_action(cx.listener(|this, _: &Copy, _, cx| {
+                this.copy(cx);
+            }))
             .on_action(cx.listener(|this, _: &Cut, _, cx| {
                 if this.read_only {
                     this.copy(cx);
                     return;
                 }
                 let clip = this.state.cut();
-                let meta = ClipboardMeta { per_selection: clip.per_selection.clone(), whole_lines: clip.whole_lines };
-                cx.write_to_clipboard(ClipboardItem::new_string_with_json_metadata(clip.text, meta));
+                let meta = ClipboardMeta {
+                    per_selection: clip.per_selection.clone(),
+                    whole_lines: clip.whole_lines,
+                };
+                cx.write_to_clipboard(ClipboardItem::new_string_with_json_metadata(
+                    clip.text, meta,
+                ));
                 this.did_change(cx);
             }))
             .on_action(cx.listener(|this, _: &Paste, _, cx| this.paste(cx)))
-            .on_action(cx.listener(|this, _: &SelectAll, _, cx| this.motion(cx, |s| s.select_all())))
+            .on_action(
+                cx.listener(|this, _: &SelectAll, _, cx| this.motion(cx, |s| s.select_all())),
+            )
             // Multiple selections
-            .on_action(cx.listener(|this, _: &SelectLine, _, cx| this.motion(cx, |s| s.select_line())))
-            .on_action(cx.listener(|this, _: &SplitIntoLines, _, cx| this.motion(cx, |s| s.split_into_lines())))
-            .on_action(cx.listener(|this, _: &AddNextOccurrence, _, cx| this.motion(cx, |s| { s.add_next_occurrence(); })))
-            .on_action(cx.listener(|this, _: &SkipOccurrence, _, cx| this.motion(cx, |s| { s.skip_occurrence(); })))
-            .on_action(cx.listener(|this, _: &SelectAllOccurrences, _, cx| this.motion(cx, |s| { s.select_all_occurrences(); })))
-            .on_action(cx.listener(|this, _: &AddCursorAbove, _, cx| this.motion(cx, |s| { s.add_cursor_vertically(false); })))
-            .on_action(cx.listener(|this, _: &AddCursorBelow, _, cx| this.motion(cx, |s| { s.add_cursor_vertically(true); })))
+            .on_action(
+                cx.listener(|this, _: &SelectLine, _, cx| this.motion(cx, |s| s.select_line())),
+            )
+            .on_action(cx.listener(|this, _: &SplitIntoLines, _, cx| {
+                this.motion(cx, |s| s.split_into_lines())
+            }))
+            .on_action(cx.listener(|this, _: &AddNextOccurrence, _, cx| {
+                this.motion(cx, |s| {
+                    s.add_next_occurrence();
+                })
+            }))
+            .on_action(cx.listener(|this, _: &SkipOccurrence, _, cx| {
+                this.motion(cx, |s| {
+                    s.skip_occurrence();
+                })
+            }))
+            .on_action(cx.listener(|this, _: &SelectAllOccurrences, _, cx| {
+                this.motion(cx, |s| {
+                    s.select_all_occurrences();
+                })
+            }))
+            .on_action(cx.listener(|this, _: &AddCursorAbove, _, cx| {
+                this.motion(cx, |s| {
+                    s.add_cursor_vertically(false);
+                })
+            }))
+            .on_action(cx.listener(|this, _: &AddCursorBelow, _, cx| {
+                this.motion(cx, |s| {
+                    s.add_cursor_vertically(true);
+                })
+            }))
             .on_action(cx.listener(|this, _: &Cancel, _, cx| {
-                if this.state.selections().len() > 1 || !this.state.selections().primary().is_empty() {
+                if this.state.selections().len() > 1
+                    || !this.state.selections().primary().is_empty()
+                {
                     this.motion(cx, |s| s.collapse_selections());
                 } else {
                     cx.propagate();
@@ -904,7 +1130,12 @@ fn load_file(path: &Path) -> Loaded {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             // A new file: opens empty and is created on save.
-            return Loaded { doc: Document::new(), read_only: false, notice: None, mtime: None };
+            return Loaded {
+                doc: Document::new(),
+                read_only: false,
+                notice: None,
+                mtime: None,
+            };
         }
         Err(err) => {
             return Loaded {
@@ -924,7 +1155,12 @@ fn load_file(path: &Path) -> Loaded {
         };
     }
     match String::from_utf8(bytes) {
-        Ok(text) => Loaded { doc: Document::from_str(&text), read_only: false, notice: None, mtime },
+        Ok(text) => Loaded {
+            doc: Document::from_str(&text),
+            read_only: false,
+            notice: None,
+            mtime,
+        },
         Err(err) => {
             let text = String::from_utf8_lossy(err.as_bytes()).into_owned();
             Loaded {
@@ -939,7 +1175,10 @@ fn load_file(path: &Path) -> Loaded {
 
 fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let dir = path
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
     let permissions = std::fs::metadata(path).map(|m| m.permissions()).ok();
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
     tmp.write_all(bytes)?;
@@ -959,5 +1198,9 @@ pub fn human_size(bytes: u64) -> String {
         size /= 1024.0;
         unit += 1;
     }
-    if unit == 0 { format!("{bytes} B") } else { format!("{size:.1} {}", UNITS[unit]) }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{size:.1} {}", UNITS[unit])
+    }
 }

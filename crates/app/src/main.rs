@@ -32,7 +32,10 @@ struct Args {
 
 fn parse_args() -> Args {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
-    let mut args = Args { from_cli: false, paths: Vec::new() };
+    let mut args = Args {
+        from_cli: false,
+        paths: Vec::new(),
+    };
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "--from-cli" => args.from_cli = true,
@@ -45,8 +48,37 @@ fn parse_args() -> Args {
     args
 }
 
+static STARTED: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+/// Traces a named startup phase (first occurrence only matters).
+pub fn trace_phase(label: &str) {
+    if let Some(started) = STARTED.get() {
+        trace(*started, label);
+    }
+}
+
+/// Called from the workspace's first render.
+pub fn trace_first_frame() {
+    static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !DONE.swap(true, std::sync::atomic::Ordering::Relaxed)
+        && let Some(started) = STARTED.get()
+    {
+        trace(*started, "first frame laid out");
+    }
+}
+
+/// `EDITOR_TRACE_STARTUP=1` prints how long each startup phase took.
+fn trace(started: Instant, label: &str) {
+    if std::env::var_os("EDITOR_TRACE_STARTUP").is_some() {
+        eprintln!(
+            "startup: {label:<28} {:>7.1} ms",
+            started.elapsed().as_secs_f64() * 1000.
+        );
+    }
+}
+
 fn main() {
-    let started = Instant::now();
+    let started = *STARTED.get_or_init(Instant::now);
     let args = parse_args();
 
     // Single instance: if the app is already running, hand our paths to it.
@@ -66,7 +98,9 @@ fn main() {
         }
     };
 
+    trace(started, "socket bound");
     let app = gpui_platform::application().with_assets(assets::Assets);
+    trace(started, "platform created");
 
     // Files opened from Finder ("Open With", double click, drag on the Dock).
     let (urls_tx, mut urls_rx) = mpsc::unbounded::<Vec<String>>();
@@ -80,8 +114,11 @@ fn main() {
     });
 
     app.run(move |cx: &mut App| {
+        trace(started, "app running");
         gpui_component::init(cx);
+        trace(started, "components initialized");
         theme::init(cx.window_appearance(), cx);
+        trace(started, "theme resolved");
         actions::bind_keys(cx);
         file_tree::bind_keys(cx);
         app_state::init(cx);
@@ -97,7 +134,11 @@ fn main() {
                 let paths: Vec<OpenPath> = urls
                     .iter()
                     .filter_map(|u| u.strip_prefix("file://"))
-                    .map(|p| OpenPath { path: PathBuf::from(percent_decode(p)), line: None, column: None })
+                    .map(|p| OpenPath {
+                        path: PathBuf::from(percent_decode(p)),
+                        line: None,
+                        column: None,
+                    })
                     .collect();
                 if !paths.is_empty() {
                     cx.update(|cx| app_state::open(paths, None, false, cx));
@@ -130,32 +171,9 @@ fn main() {
         } else {
             app_state::open_window(None, cx);
         }
+        trace(started, "app setup done");
         cx.activate(true);
-
-        if std::env::var_os("EDITOR_TRACE_STARTUP").is_some() {
-            eprintln!("startup: first window requested after {:?}", started.elapsed());
-            cx.on_next_frame_hack(started);
-        }
     });
-}
-
-trait StartupTrace {
-    fn on_next_frame_hack(&mut self, started: Instant);
-}
-
-impl StartupTrace for App {
-    /// Reports when the first frame has been drawn.
-    fn on_next_frame_hack(&mut self, started: Instant) {
-        if let Some(window) = self.windows().first().copied() {
-            window
-                .update(self, move |_, window, _| {
-                    window.on_next_frame(move |_, _| {
-                        eprintln!("startup: first frame after {:?}", started.elapsed());
-                    });
-                })
-                .ok();
-        }
-    }
 }
 
 #[cfg(unix)]

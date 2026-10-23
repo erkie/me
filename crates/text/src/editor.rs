@@ -10,8 +10,8 @@ use crate::change::{Assoc, Change, ChangeSet};
 use crate::document::Document;
 use crate::history::EditKind;
 use crate::movement::{
-    char_col_at_visual, indentation, next_grapheme_boundary, next_word_end,
-    prev_grapheme_boundary, prev_word_start, visual_col, word_range_at,
+    char_col_at_visual, indentation, next_grapheme_boundary, next_word_end, prev_grapheme_boundary,
+    prev_word_start, visual_col, word_range_at,
 };
 use crate::search::SearchQuery;
 use crate::selection::{Selection, SelectionSet};
@@ -78,7 +78,11 @@ impl EditorState {
     }
 
     fn indent_unit(&self) -> String {
-        if self.hard_tabs { "\t".into() } else { " ".repeat(self.tab_width) }
+        if self.hard_tabs {
+            "\t".into()
+        } else {
+            " ".repeat(self.tab_width)
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -118,12 +122,24 @@ impl EditorState {
         let ranges: Vec<Range<usize>> = self
             .selections
             .iter()
-            .map(|s| if s.is_empty() { f(self, s.head) } else { s.range() })
+            .map(|s| {
+                if s.is_empty() {
+                    f(self, s.head)
+                } else {
+                    s.range()
+                }
+            })
             .collect();
-        let changes =
-            ChangeSet::new(ranges.iter().map(|r| Change::delete(r.start, r.end)).collect());
+        let changes = ChangeSet::new(
+            ranges
+                .iter()
+                .map(|r| Change::delete(r.start, r.end))
+                .collect(),
+        );
         let after = cursors(
-            ranges.iter().map(|r| changes.map_pos(r.start, Assoc::Before)),
+            ranges
+                .iter()
+                .map(|r| changes.map_pos(r.start, Assoc::Before)),
             self.selections.primary_index(),
         );
         self.commit(changes, after, kind);
@@ -152,7 +168,10 @@ impl EditorState {
                 end.saturating_sub(text_len)..end
             })
             .collect();
-        let after = cursors(inserted.iter().map(|r| r.end), self.selections.primary_index());
+        let after = cursors(
+            inserted.iter().map(|r| r.end),
+            self.selections.primary_index(),
+        );
         self.occurrence_word = None;
         self.commit(changes, after, kind);
         inserted
@@ -277,7 +296,11 @@ impl EditorState {
                 text.push_str(eol);
                 per_selection.push(text);
             }
-            return ClipboardText { text: per_selection.concat(), per_selection, whole_lines: true };
+            return ClipboardText {
+                text: per_selection.concat(),
+                per_selection,
+                whole_lines: true,
+            };
         }
         let per_selection: Vec<String> = self
             .selections
@@ -285,7 +308,11 @@ impl EditorState {
             .filter(|s| !s.is_empty())
             .map(|s| self.doc.text(s.range()))
             .collect();
-        ClipboardText { text: per_selection.join(eol), per_selection, whole_lines: false }
+        ClipboardText {
+            text: per_selection.join(eol),
+            per_selection,
+            whole_lines: false,
+        }
     }
 
     pub fn cut(&mut self) -> ClipboardText {
@@ -319,7 +346,10 @@ impl EditorState {
                 .iter()
                 .enumerate()
                 .map(|(i, s)| {
-                    let text = pieces.as_ref().map(|p| p[i].clone()).unwrap_or(clip.text.clone());
+                    let text = pieces
+                        .as_ref()
+                        .map(|p| p[i].clone())
+                        .unwrap_or(clip.text.clone());
                     let line_start = self.doc.line_start(self.doc.char_to_line(s.head));
                     Change::insert(line_start, text)
                 })
@@ -390,10 +420,20 @@ impl EditorState {
     fn map_keeping_line_starts(&self, changes: &ChangeSet) -> SelectionSet {
         let map = |pos: usize| {
             let at_line_start = pos == self.doc.line_start(self.doc.char_to_line(pos));
-            changes.map_pos(pos, if at_line_start { Assoc::Before } else { Assoc::After })
+            changes.map_pos(
+                pos,
+                if at_line_start {
+                    Assoc::Before
+                } else {
+                    Assoc::After
+                },
+            )
         };
         SelectionSet::new(
-            self.selections.iter().map(|s| Selection::new(map(s.anchor), map(s.head))).collect(),
+            self.selections
+                .iter()
+                .map(|s| Selection::new(map(s.anchor), map(s.head)))
+                .collect(),
             self.selections.primary_index(),
         )
     }
@@ -401,7 +441,10 @@ impl EditorState {
     /// Tab: indents touched lines when any selection spans lines, otherwise
     /// inserts indentation at each cursor.
     pub fn tab(&mut self) {
-        let multi_line = self.selections.iter().any(|s| self.touched_lines(*s).len() > 1);
+        let multi_line = self
+            .selections
+            .iter()
+            .any(|s| self.touched_lines(*s).len() > 1);
         if multi_line {
             self.indent_lines();
             return;
@@ -492,7 +535,13 @@ impl EditorState {
         } else {
             let min_indent = lines
                 .iter()
-                .map(|&l| self.doc.line(l).chars().take_while(|c| c.is_whitespace()).count())
+                .map(|&l| {
+                    self.doc
+                        .line(l)
+                        .chars()
+                        .take_while(|c| c.is_whitespace())
+                        .count()
+                })
                 .min()
                 .unwrap_or(0);
             lines
@@ -522,7 +571,9 @@ impl EditorState {
         }
         let changes = ChangeSet::new(changes);
         let after = cursors(
-            targets.into_iter().map(|t| changes.map_pos(t, Assoc::Before)),
+            targets
+                .into_iter()
+                .map(|t| changes.map_pos(t, Assoc::Before)),
             0,
         );
         self.commit(changes, after, EditKind::Other);
@@ -570,7 +621,9 @@ impl EditorState {
         } else {
             let sels: Vec<Selection> = self.selections.iter().copied().collect();
             let changes = ChangeSet::new(
-                sels.iter().map(|s| Change::insert(s.end(), self.doc.text(s.range()))).collect(),
+                sels.iter()
+                    .map(|s| Change::insert(s.end(), self.doc.text(s.range())))
+                    .collect(),
             );
             let after = SelectionSet::new(
                 sels.iter()
@@ -676,7 +729,11 @@ impl EditorState {
             .map(|s| {
                 let target = f(self, *s);
                 if extend {
-                    Selection { anchor: s.anchor, head: target.head, goal: target.goal }
+                    Selection {
+                        anchor: s.anchor,
+                        head: target.head,
+                        goal: target.goal,
+                    }
                 } else {
                     Selection::cursor(target.head).with_goal(target.goal)
                 }
@@ -725,7 +782,9 @@ impl EditorState {
         let tab_width = self.tab_width;
         self.move_each(extend, |this, s| {
             let (line, col) = this.doc.line_col(s.head);
-            let goal = s.goal.unwrap_or_else(|| visual_col(this.doc.line(line), col, tab_width));
+            let goal = s
+                .goal
+                .unwrap_or_else(|| visual_col(this.doc.line(line), col, tab_width));
             let target = line as isize + lines;
             if target < 0 {
                 return Selection::cursor(0).with_goal(Some(goal));
@@ -777,7 +836,10 @@ impl EditorState {
     // ---------------------------------------------------------------------
 
     pub fn select_all(&mut self) {
-        self.set_selections(SelectionSet::single(Selection::new(0, self.doc.len_chars())));
+        self.set_selections(SelectionSet::single(Selection::new(
+            0,
+            self.doc.len_chars(),
+        )));
     }
 
     /// Esc: back to one selection; then to a bare cursor.
@@ -867,13 +929,19 @@ impl EditorState {
         if self.selections.primary().is_empty() {
             return self.expand_cursors_to_words();
         }
-        let Some(query) = self.occurrence_query() else { return false };
-        let Ok(matcher) = query.compile() else { return false };
+        let Some(query) = self.occurrence_query() else {
+            return false;
+        };
+        let Ok(matcher) = query.compile() else {
+            return false;
+        };
         let rope = self.doc.rope();
         let mut from = self.selections.primary().end();
         // Skip matches that are already selected; give up after a full lap.
         for _ in 0..self.selections.len() + 1 {
-            let Some(found) = matcher.find_next(rope, from) else { return false };
+            let Some(found) = matcher.find_next(rope, from) else {
+                return false;
+            };
             let taken = self.selections.iter().any(|s| s.range() == found);
             if !taken {
                 let word = self.occurrence_word.take();
@@ -893,9 +961,15 @@ impl EditorState {
         if primary.is_empty() {
             return self.add_next_occurrence();
         }
-        let Some(query) = self.occurrence_query() else { return false };
-        let Ok(matcher) = query.compile() else { return false };
-        let Some(found) = matcher.find_next(self.doc.rope(), primary.end()) else { return false };
+        let Some(query) = self.occurrence_query() else {
+            return false;
+        };
+        let Ok(matcher) = query.compile() else {
+            return false;
+        };
+        let Some(found) = matcher.find_next(self.doc.rope(), primary.end()) else {
+            return false;
+        };
         if self.selections.iter().any(|s| s.range() == found) {
             return false;
         }
@@ -916,14 +990,18 @@ impl EditorState {
         if self.selections.primary().is_empty() && !self.expand_cursors_to_words() {
             return false;
         }
-        let Some(query) = self.occurrence_query() else { return false };
+        let Some(query) = self.occurrence_query() else {
+            return false;
+        };
         self.select_all_matches(&query)
     }
 
     /// Turns every match of `query` into a selection (Alt+Enter in the find
     /// bar). Keeps the match nearest the old primary as primary.
     pub fn select_all_matches(&mut self, query: &SearchQuery) -> bool {
-        let Ok(matcher) = query.compile() else { return false };
+        let Ok(matcher) = query.compile() else {
+            return false;
+        };
         let len = self.doc.len_chars();
         let matches = matcher.find_all(self.doc.rope(), 0..len, usize::MAX);
         if matches.is_empty() {
@@ -933,7 +1011,10 @@ impl EditorState {
         let primary = matches.iter().position(|m| m.start >= anchor).unwrap_or(0);
         let word = self.occurrence_word.take();
         self.selections = SelectionSet::new(
-            matches.into_iter().map(|m| Selection::new(m.start, m.end)).collect(),
+            matches
+                .into_iter()
+                .map(|m| Selection::new(m.start, m.end))
+                .collect(),
             primary,
         );
         self.occurrence_word = word;
@@ -957,12 +1038,17 @@ impl EditorState {
     /// Replaces every match of `query` in the document as one undo step.
     /// Returns the number of replacements.
     pub fn replace_all(&mut self, query: &SearchQuery, replacement: &str) -> usize {
-        let Ok(matcher) = query.compile() else { return 0 };
+        let Ok(matcher) = query.compile() else {
+            return 0;
+        };
         let len = self.doc.len_chars();
         let reps = matcher.replacements(self.doc.rope(), 0..len, replacement, query.regex);
         let count = reps.len();
-        let changes =
-            ChangeSet::new(reps.into_iter().map(|(r, t)| Change::new(r.start, r.end, t)).collect());
+        let changes = ChangeSet::new(
+            reps.into_iter()
+                .map(|(r, t)| Change::new(r.start, r.end, t))
+                .collect(),
+        );
         let mut after = self.selections.clone();
         after.map(&changes);
         self.commit(changes, after, EditKind::Other);
@@ -972,13 +1058,19 @@ impl EditorState {
     /// Replaces the primary selection if it is a match of `query`, then
     /// selects the next match.
     pub fn replace_next(&mut self, query: &SearchQuery, replacement: &str) -> bool {
-        let Ok(matcher) = query.compile() else { return false };
+        let Ok(matcher) = query.compile() else {
+            return false;
+        };
         let primary = self.selections.primary();
         let reps = matcher.replacements(self.doc.rope(), primary.range(), replacement, query.regex);
         if let Some((range, text)) = reps.into_iter().find(|(r, _)| *r == primary.range()) {
             let changes = ChangeSet::new(vec![Change::new(range.start, range.end, text)]);
             let end = changes.map_pos(range.end, Assoc::After);
-            self.commit(changes, SelectionSet::single(Selection::cursor(end)), EditKind::Other);
+            self.commit(
+                changes,
+                SelectionSet::single(Selection::cursor(end)),
+                EditKind::Other,
+            );
         }
         self.find(query, false).is_some()
     }
@@ -987,9 +1079,15 @@ impl EditorState {
     /// first selection (or below the last one).
     pub fn add_cursor_vertically(&mut self, below: bool) -> bool {
         let tab_width = self.tab_width;
-        let edge = if below { self.selections.last() } else { self.selections.first() };
+        let edge = if below {
+            self.selections.last()
+        } else {
+            self.selections.first()
+        };
         let (line, col) = self.doc.line_col(edge.head);
-        let goal = edge.goal.unwrap_or_else(|| visual_col(self.doc.line(line), col, tab_width));
+        let goal = edge
+            .goal
+            .unwrap_or_else(|| visual_col(self.doc.line(line), col, tab_width));
         let target = if below {
             if line + 1 >= self.doc.len_lines() {
                 return false;
@@ -1003,7 +1101,8 @@ impl EditorState {
         };
         let (c, _) = char_col_at_visual(self.doc.line(target), goal, tab_width);
         let pos = self.doc.line_start(target) + c;
-        self.selections.push(Selection::cursor(pos).with_goal(Some(goal)));
+        self.selections
+            .push(Selection::cursor(pos).with_goal(Some(goal)));
         true
     }
 

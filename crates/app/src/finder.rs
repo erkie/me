@@ -1,18 +1,17 @@
 //! Cmd+T: fuzzy "go to file". The index is built in the background when the
 //! window opens, so the first Cmd+T is as fast as the rest.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use editor_project::{FileFinder, FileMatch, split_line_suffix};
 use futures::StreamExt;
 use futures::channel::mpsc;
 use gpui::{
-    AppContext,
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, HighlightStyle, InteractiveElement,
-    IntoElement, KeyDownEvent, ParentElement, Render, ScrollStrategy, SharedString,
-    StatefulInteractiveElement, StyledText, Styled, Subscription, Task, UniformListScrollHandle,
-    Window, div, prelude::FluentBuilder, px, svg, uniform_list,
+    App, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable, HighlightStyle,
+    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, ScrollStrategy,
+    SharedString, StatefulInteractiveElement, Styled, StyledText, Subscription, Task,
+    UniformListScrollHandle, Window, div, prelude::FluentBuilder, px, svg, uniform_list,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 
@@ -23,7 +22,10 @@ const ROW_HEIGHT: f32 = 44.;
 const VISIBLE_ROWS: usize = 10;
 
 pub enum FinderEvent {
-    Open { path: PathBuf, line: Option<(u32, Option<u32>)> },
+    Open {
+        path: PathBuf,
+        line: Option<(u32, Option<u32>)>,
+    },
     Dismiss,
 }
 
@@ -65,13 +67,15 @@ impl FinderView {
             }
         });
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Go to file…"));
-        let subscription = cx.subscribe_in(&input, window, |this, _, event: &InputEvent, _window, cx| {
-            match event {
+        let subscription = cx.subscribe_in(
+            &input,
+            window,
+            |this, _, event: &InputEvent, _window, cx| match event {
                 InputEvent::Change => this.query_changed(cx),
                 InputEvent::PressEnter { .. } => this.confirm(cx),
                 _ => {}
-            }
-        });
+            },
+        );
         Self {
             root,
             finder,
@@ -85,14 +89,11 @@ impl FinderView {
         }
     }
 
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
-
     /// Called each time the finder opens.
     pub fn reset(&mut self, recent: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
         self.recent = recent;
-        self.input.update(cx, |input, cx| input.set_value("", window, cx));
+        self.input
+            .update(cx, |input, cx| input.set_value("", window, cx));
         self.selected = 0;
         self.query_changed(cx);
         self.input.update(cx, |input, cx| input.focus(window, cx));
@@ -124,7 +125,10 @@ impl FinderView {
                 .recent
                 .iter()
                 .filter_map(|p| p.strip_prefix(&root).ok())
-                .map(|p| FileMatch { path: Arc::from(p.to_string_lossy().as_ref()), indices: Vec::new() })
+                .map(|p| FileMatch {
+                    path: Arc::from(p.to_string_lossy().as_ref()),
+                    indices: Vec::new(),
+                })
                 .collect();
             let mut results = recent;
             for m in self.finder.results(MAX_RESULTS) {
@@ -149,7 +153,8 @@ impl FinderView {
         }
         let n = self.results.len() as isize;
         self.selected = ((self.selected as isize + delta).rem_euclid(n)) as usize;
-        self.scroll.scroll_to_item(self.selected, ScrollStrategy::Top);
+        self.scroll
+            .scroll_to_item(self.selected, ScrollStrategy::Top);
         cx.notify();
     }
 
@@ -217,26 +222,31 @@ impl Render for FinderView {
                         Input::new(&self.input)
                             .appearance(false)
                             .text_size(px(16.))
-                            .prefix(svg().path("icons/search.svg").size(px(16.)).text_color(palette.text_secondary)),
+                            .prefix(
+                                svg()
+                                    .path("icons/search.svg")
+                                    .size(px(16.))
+                                    .text_color(palette.text_secondary),
+                            ),
                     ),
             )
-            .child(
-                div().h(list_height).when(!results.is_empty(), |el| {
-                    el.child(
-                        uniform_list(
-                            "finder-results",
-                            results.len(),
-                            cx.processor(move |_this, range: std::ops::Range<usize>, _window, cx| {
-                                range
-                                    .map(|ix| render_result(ix, &results[ix], ix == selected, &palette, cx))
-                                    .collect()
-                            }),
-                        )
-                        .track_scroll(&self.scroll)
-                        .h(list_height),
+            .child(div().h(list_height).when(!results.is_empty(), |el| {
+                el.child(
+                    uniform_list(
+                        "finder-results",
+                        results.len(),
+                        cx.processor(move |_this, range: std::ops::Range<usize>, _window, cx| {
+                            range
+                                .map(|ix| {
+                                    render_result(ix, &results[ix], ix == selected, &palette, cx)
+                                })
+                                .collect()
+                        }),
                     )
-                }),
-            )
+                    .track_scroll(&self.scroll)
+                    .h(list_height),
+                )
+            }))
             .child(
                 div()
                     .px(px(14.))
@@ -264,22 +274,31 @@ fn render_result(
     };
     let name_start_char = path[..path.len() - name.len()].chars().count() as u32;
     // nucleo gives char indices into the whole path; split them per part.
-    let to_byte_ranges = |text: &str, offset: u32| -> Vec<(std::ops::Range<usize>, HighlightStyle)> {
-        let mut out = Vec::new();
-        for (ci, (bi, ch)) in text.char_indices().enumerate() {
-            if m.indices.binary_search(&(offset + ci as u32)).is_ok() {
-                out.push((
-                    bi..bi + ch.len_utf8(),
-                    HighlightStyle { color: Some(palette.accent), font_weight: Some(gpui::FontWeight::BOLD), ..Default::default() },
-                ));
+    let to_byte_ranges =
+        |text: &str, offset: u32| -> Vec<(std::ops::Range<usize>, HighlightStyle)> {
+            let mut out = Vec::new();
+            for (ci, (bi, ch)) in text.char_indices().enumerate() {
+                if m.indices.binary_search(&(offset + ci as u32)).is_ok() {
+                    out.push((
+                        bi..bi + ch.len_utf8(),
+                        HighlightStyle {
+                            color: Some(palette.accent),
+                            font_weight: Some(gpui::FontWeight::BOLD),
+                            ..Default::default()
+                        },
+                    ));
+                }
             }
-        }
-        out
-    };
+            out
+        };
     let name_text = StyledText::new(SharedString::from(name.to_string()))
         .with_highlights(to_byte_ranges(name, name_start_char));
-    let dir_text = StyledText::new(SharedString::from(if dir.is_empty() { "./".to_string() } else { dir.to_string() }))
-        .with_highlights(to_byte_ranges(dir, 0));
+    let dir_text = StyledText::new(SharedString::from(if dir.is_empty() {
+        "./".to_string()
+    } else {
+        dir.to_string()
+    }))
+    .with_highlights(to_byte_ranges(dir, 0));
     let row = div()
         .w_full()
         .h(px(ROW_HEIGHT))
@@ -290,7 +309,12 @@ fn render_result(
         .rounded(px(7.))
         .when(selected, |el| el.bg(palette.row_selected))
         .when(!selected, |el| el.hover(|s| s.bg(palette.hover)))
-        .child(div().text_size(px(13.)).text_color(palette.text).child(name_text))
+        .child(
+            div()
+                .text_size(px(13.))
+                .text_color(palette.text)
+                .child(name_text),
+        )
         .child(
             div()
                 .text_size(px(11.))

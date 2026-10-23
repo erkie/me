@@ -15,7 +15,10 @@ use std::time::{Duration, Instant};
 
 use editor_text::{ByteEdit, Rope, RopeSlice};
 use streaming_iterator::StreamingIterator;
-use tree_sitter::{InputEdit, Node, ParseOptions, ParseState, Parser, Point, Query, QueryCursor, TextProvider, Tree};
+use tree_sitter::{
+    InputEdit, Node, ParseOptions, ParseState, Parser, Point, Query, QueryCursor, TextProvider,
+    Tree,
+};
 
 mod languages;
 
@@ -70,15 +73,13 @@ impl Highlight {
             n if n.starts_with("diff.minus") || n.starts_with("diff.deletion") => DiffMinus,
             _ => match first {
                 "comment" => Comment,
-                "keyword" | "conditional" | "repeat" | "include" | "exception"
-                | "storageclass" | "preproc" | "define" => Keyword,
+                "keyword" | "conditional" | "repeat" | "include" | "exception" | "storageclass"
+                | "preproc" | "define" => Keyword,
                 "string" | "character" => String,
                 "number" | "float" => Number,
                 "boolean" | "constant" => Constant,
                 "function" | "method" | "constructor" => Function,
-                "type" | "class" | "interface" | "enum" | "struct" | "module" | "namespace" => {
-                    Type
-                }
+                "type" | "class" | "interface" | "enum" | "struct" | "module" | "namespace" => Type,
                 "property" | "field" => Property,
                 "attribute" => Attribute,
                 "tag" => Tag,
@@ -119,7 +120,9 @@ pub struct Language {
 
 impl std::fmt::Debug for Language {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Language").field("name", &self.def.name).finish()
+        f.debug_struct("Language")
+            .field("name", &self.def.name)
+            .finish()
     }
 }
 
@@ -144,13 +147,24 @@ impl LanguageDef {
         let query = match Query::new(&grammar, &source) {
             Ok(query) => query,
             Err(err) => {
-                eprintln!("editor-syntax: highlight query for {} failed: {err}", self.name);
+                eprintln!(
+                    "editor-syntax: highlight query for {} failed: {err}",
+                    self.name
+                );
                 return None;
             }
         };
-        let capture_highlights =
-            query.capture_names().iter().map(|name| Highlight::from_capture_name(name)).collect();
-        Some(Language { def: self, grammar, query, capture_highlights })
+        let capture_highlights = query
+            .capture_names()
+            .iter()
+            .map(|name| Highlight::from_capture_name(name))
+            .collect();
+        Some(Language {
+            def: self,
+            grammar,
+            query,
+            capture_highlights,
+        })
     }
 }
 
@@ -161,14 +175,16 @@ pub fn language_for_path(path: &Path) -> Option<&'static LanguageDef> {
         return Some(def);
     }
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    LANGUAGES.iter().find(|l| l.extensions.contains(&ext.as_str()))
+    LANGUAGES
+        .iter()
+        .find(|l| l.extensions.contains(&ext.as_str()))
 }
 
 pub fn language_by_name(name: &str) -> Option<&'static LanguageDef> {
     let name = name.to_ascii_lowercase();
-    LANGUAGES.iter().find(|l| {
-        l.name.eq_ignore_ascii_case(&name) || l.extensions.contains(&name.as_str())
-    })
+    LANGUAGES
+        .iter()
+        .find(|l| l.name.eq_ignore_ascii_case(&name) || l.extensions.contains(&name.as_str()))
 }
 
 /// A highlighted byte range.
@@ -186,7 +202,10 @@ pub struct Syntax {
 
 impl Syntax {
     pub fn new(language: Arc<Language>) -> Self {
-        Self { language, tree: None }
+        Self {
+            language,
+            tree: None,
+        }
     }
 
     pub fn language(&self) -> &Arc<Language> {
@@ -226,7 +245,9 @@ impl Syntax {
     /// non-overlapping. Inner nodes win over outer ones; for the same node,
     /// the earlier query pattern wins.
     pub fn highlight(&self, rope: &Rope, range: Range<usize>) -> Vec<HighlightSpan> {
-        let Some(tree) = &self.tree else { return Vec::new() };
+        let Some(tree) = &self.tree else {
+            return Vec::new();
+        };
         let range = range.start.min(rope.len_bytes())..range.end.min(rope.len_bytes());
         if range.is_empty() {
             return Vec::new();
@@ -248,7 +269,13 @@ impl Syntax {
             let start = node.start_byte().max(range.start);
             let end = node.end_byte().min(range.end);
             if start < end {
-                paints.push((start, end, node.byte_range().len(), m.pattern_index, highlight));
+                paints.push((
+                    start,
+                    end,
+                    node.byte_range().len(),
+                    m.pattern_index,
+                    highlight,
+                ));
             }
         }
         paints.sort_by(|a, b| b.2.cmp(&a.2).then(b.3.cmp(&a.3)));
@@ -266,7 +293,10 @@ impl Syntax {
                 Some(last) if last.range.end == at && last.highlight == highlight => {
                     last.range.end = at + 1
                 }
-                _ => spans.push(HighlightSpan { range: at..at + 1, highlight }),
+                _ => spans.push(HighlightSpan {
+                    range: at..at + 1,
+                    highlight,
+                }),
             }
         }
         spans
@@ -276,7 +306,12 @@ impl Syntax {
 /// Parses `rope`, reusing `old_tree` (already edited to match) when given.
 /// Returns `None` if parsing takes longer than `timeout`. Safe to call on a
 /// background thread with a cloned rope and tree.
-pub fn parse(language: &Language, rope: &Rope, old_tree: Option<&Tree>, timeout: Duration) -> Option<Tree> {
+pub fn parse(
+    language: &Language,
+    rope: &Rope,
+    old_tree: Option<&Tree>,
+    timeout: Duration,
+) -> Option<Tree> {
     let mut parser = Parser::new();
     parser.set_language(&language.grammar).ok()?;
     let len = rope.len_bytes();
@@ -289,7 +324,11 @@ pub fn parse(language: &Language, rope: &Rope, old_tree: Option<&Tree>, timeout:
     };
     let deadline = Instant::now() + timeout;
     let mut progress = |_: &ParseState| {
-        if Instant::now() > deadline { ControlFlow::Break(()) } else { ControlFlow::Continue(()) }
+        if Instant::now() > deadline {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
     };
     let options = ParseOptions::new().progress_callback(&mut progress);
     parser.parse_with_options(&mut read, old_tree, Some(options))
@@ -390,7 +429,11 @@ mod tests {
         syntax.parse(&rope, Duration::from_secs(5));
         let spans = syntax.highlight(&rope, 5000..5030);
         assert!(!spans.is_empty());
-        assert!(spans.iter().all(|s| s.range.start >= 5000 && s.range.end <= 5030));
+        assert!(
+            spans
+                .iter()
+                .all(|s| s.range.start >= 5000 && s.range.end <= 5030)
+        );
     }
 
     #[test]
@@ -414,6 +457,10 @@ mod tests {
     #[test]
     fn markdown_headings() {
         let spans = highlights_of("markdown", "# Title\n\nSome text.\n");
-        assert!(spans.iter().any(|(t, h)| t.contains("Title") && *h == Highlight::Title));
+        assert!(
+            spans
+                .iter()
+                .any(|(t, h)| t.contains("Title") && *h == Highlight::Title)
+        );
     }
 }

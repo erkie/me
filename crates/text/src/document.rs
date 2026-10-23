@@ -39,7 +39,11 @@ impl LineEnding {
             }
             prev = ch;
         }
-        if crlf > lf { LineEnding::CrLf } else { LineEnding::Lf }
+        if crlf > lf {
+            LineEnding::CrLf
+        } else {
+            LineEnding::Lf
+        }
     }
 }
 
@@ -60,7 +64,11 @@ impl Document {
 
     pub fn from_rope(rope: Rope) -> Self {
         let line_ending = LineEnding::detect(&rope);
-        Self { rope, line_ending, ..Default::default() }
+        Self {
+            rope,
+            line_ending,
+            ..Default::default()
+        }
     }
 
     #[allow(clippy::should_implement_trait)]
@@ -178,8 +186,7 @@ impl Document {
 
     /// Replaces the whole content (e.g. reload from disk) as one undoable step.
     pub fn replace_all(&mut self, text: &str, selections: &mut SelectionSet) {
-        let changes =
-            ChangeSet::new(vec![crate::change::Change::new(0, self.len_chars(), text)]);
+        let changes = ChangeSet::new(vec![crate::change::Change::new(0, self.len_chars(), text)]);
         let before = selections.clone();
         selections.map(&changes);
         selections.clamp(self.len_chars() + text.chars().count());

@@ -15,7 +15,11 @@ pub struct Selection {
 
 impl Selection {
     pub fn new(anchor: usize, head: usize) -> Self {
-        Self { anchor, head, goal: None }
+        Self {
+            anchor,
+            head,
+            goal: None,
+        }
     }
 
     pub fn cursor(pos: usize) -> Self {
@@ -48,7 +52,11 @@ impl Selection {
 
     /// Moves the head, keeping the anchor (shift-movement).
     pub fn extend_to(self, head: usize) -> Self {
-        Self { anchor: self.anchor, head, goal: None }
+        Self {
+            anchor: self.anchor,
+            head,
+            goal: None,
+        }
     }
 
     pub fn with_goal(mut self, goal: Option<usize>) -> Self {
@@ -92,14 +100,20 @@ impl Default for SelectionSet {
 
 impl SelectionSet {
     pub fn single(selection: Selection) -> Self {
-        Self { selections: vec![selection], primary: 0 }
+        Self {
+            selections: vec![selection],
+            primary: 0,
+        }
     }
 
     /// Builds a set from arbitrary selections. `primary` indexes into
     /// `selections`. Overlapping selections are merged.
     pub fn new(selections: Vec<Selection>, primary: usize) -> Self {
         assert!(!selections.is_empty(), "a selection set is never empty");
-        let mut set = Self { primary: primary.min(selections.len() - 1), selections };
+        let mut set = Self {
+            primary: primary.min(selections.len() - 1),
+            selections,
+        };
         set.normalize();
         set
     }
@@ -208,8 +222,7 @@ impl SelectionSet {
             return;
         }
         let primary_sel = self.selections[self.primary];
-        let mut indexed: Vec<(usize, Selection)> =
-            self.selections.drain(..).enumerate().collect();
+        let mut indexed: Vec<(usize, Selection)> = self.selections.drain(..).enumerate().collect();
         indexed.sort_by_key(|(_, s)| (s.start(), s.end()));
 
         let old_primary = self.primary;
