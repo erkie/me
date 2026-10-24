@@ -23,7 +23,7 @@ use crate::file_tree::{FileTree, FileTreeEvent};
 use crate::find_bar::{FindBar, FindBarEvent};
 use crate::finder::{FinderEvent, FinderView};
 use crate::goto_line::{GoToLineEvent, GoToLinePrompt};
-use crate::image_preview::{ImagePreview, is_image, is_svg};
+use crate::image_preview::{ImageEvent, ImagePreview, is_image, is_svg};
 use crate::lsp::{FileEdit, LanguageServers, Query, Target};
 use crate::markdown::{MarkdownEvent, MarkdownPreview, is_markdown};
 use crate::palette::{CommandPalette, PaletteEvent};
@@ -99,6 +99,29 @@ impl Tab {
 
     fn showing_preview(&self) -> bool {
         self.show_preview && self.preview.is_some()
+    }
+
+    /// The picture of a raster image, which has no source and is painted on
+    /// instead of edited.
+    fn raster(&self) -> Option<&Entity<ImagePreview>> {
+        match (&self.preview, self.has_source) {
+            (Some(Preview::Image(image)), false) => Some(image),
+            _ => None,
+        }
+    }
+
+    fn is_dirty(&self, cx: &App) -> bool {
+        match self.raster() {
+            Some(image) => image.read(cx).is_dirty(),
+            None => self.editor.read(cx).is_dirty(),
+        }
+    }
+
+    fn save(&self, window: &mut Window, cx: &mut App) -> Task<anyhow::Result<()>> {
+        match self.raster() {
+            Some(image) => image.update(cx, |image, cx| image.save(window, cx)),
+            None => self.editor.update(cx, |editor, cx| editor.save(window, cx)),
+        }
     }
 }
 
@@ -361,8 +384,11 @@ impl Workspace {
                         .tabs
                         .iter()
                         .filter(|t| {
-                            let e = t.editor.read(cx);
-                            !e.is_dirty() && e.path().is_some_and(|p| p.starts_with(path))
+                            !t.is_dirty(cx)
+                                && t.editor
+                                    .read(cx)
+                                    .path()
+                                    .is_some_and(|p| p.starts_with(path))
                         })
                         .map(|t| t.id)
                         .collect();
@@ -466,7 +492,7 @@ impl Workspace {
             .tabs
             .iter()
             .enumerate()
-            .filter(|(ix, t)| close(*ix) && !t.editor.read(cx).is_dirty())
+            .filter(|(ix, t)| close(*ix) && !t.is_dirty(cx))
             .map(|(_, t)| t.id)
             .collect();
         for id in ids {
@@ -490,6 +516,9 @@ impl Workspace {
         for tab in &self.tabs {
             let new_path = tab.editor.read(cx).path().and_then(moved);
             if let Some(new_path) = new_path {
+                if let Some(Preview::Image(image)) = &tab.preview {
+                    image.update(cx, |image, _| image.set_path(new_path.clone()));
+                }
                 tab.editor.update(cx, |e, cx| e.set_path(new_path, cx));
             }
         }
@@ -1380,6 +1409,7 @@ impl Workspace {
     fn snapshot(&mut self, open: bool, window: Option<&Window>, cx: &App) -> session::Snapshot {
         let mut tabs = Vec::new();
         let mut buffers = Vec::new();
+        let mut images = Vec::new();
         let mut active = None;
         for (ix, tab) in self.tabs.iter().enumerate() {
             // `me -w` tabs belong to the process waiting on them.
@@ -1387,14 +1417,23 @@ impl Workspace {
                 continue;
             }
             let editor = tab.editor.read(cx);
-            let unsaved = editor.unsaved_text().map(|rope| {
-                let name = format!("buffer-{}.txt", tab.id);
-                let revision = editor.revision();
-                if self.written_revisions.insert(tab.id, revision) != Some(revision) {
-                    buffers.push((name.clone(), rope));
-                }
-                name
-            });
+            let unsaved = match tab.raster() {
+                Some(image) => image.read(cx).unsaved_pixels().map(|(revision, pixels)| {
+                    let name = format!("buffer-{}.png", tab.id);
+                    if self.written_revisions.insert(tab.id, revision) != Some(revision) {
+                        images.push((name.clone(), pixels));
+                    }
+                    name
+                }),
+                None => editor.unsaved_text().map(|rope| {
+                    let name = format!("buffer-{}.txt", tab.id);
+                    let revision = editor.revision();
+                    if self.written_revisions.insert(tab.id, revision) != Some(revision) {
+                        buffers.push((name.clone(), rope));
+                    }
+                    name
+                }),
+            };
             if editor.path().is_none() && unsaved.is_none() {
                 continue;
             }
@@ -1432,6 +1471,7 @@ impl Workspace {
                 bounds: self.last_bounds,
             },
             buffers,
+            images,
         }
     }
 
@@ -1488,13 +1528,22 @@ impl Workspace {
         self.sidebar_width = saved.sidebar_width.clamp(MIN_SIDEBAR, MAX_SIDEBAR);
         let mut active_id = None;
         for (ix, tab) in saved.tabs.into_iter().enumerate() {
-            let text = tab
+            let buffer = tab
                 .unsaved
                 .as_deref()
                 .and_then(|name| session::read_buffer(&self.session_key, name));
+            // A raster image's unsaved pixels are a PNG.
+            let raster = tab
+                .path
+                .as_deref()
+                .is_some_and(|p| is_image(p) && !is_svg(p));
+            let (text, pixels) = match buffer {
+                Some(png) if raster => (None, Some(png)),
+                buffer => (buffer.and_then(|b| String::from_utf8(b).ok()), None),
+            };
             let id = match &tab.path {
                 // A file deleted since, with nothing unsaved: let it go.
-                Some(path) if !path.exists() && text.is_none() => continue,
+                Some(path) if !path.exists() && text.is_none() && pixels.is_none() => continue,
                 Some(path) => self.open_path(
                     path.clone(),
                     OpenOptions {
@@ -1514,6 +1563,9 @@ impl Workspace {
             t.pinned = tab.pinned;
             // Raster images have nothing but the preview.
             t.show_preview = !t.has_source || (tab.show_preview && t.preview.is_some());
+            if let (Some(png), Some(image)) = (pixels, t.raster()) {
+                image.update(cx, |image, cx| image.restore_unsaved(png, cx));
+            }
             t.editor.update(cx, |e, cx| {
                 e.restore(
                     crate::editor::Restore {
@@ -1567,12 +1619,47 @@ impl Workspace {
         }
 
         let tab = if is_image(&path) && !is_svg(&path) {
-            // A picture only; the bytes never go into an editor.
+            // A picture to paint on; the bytes never go into an editor.
             let editor = cx.new(|cx| EditorView::placeholder(path.clone(), window, cx));
             let image = cx.new(|cx| ImagePreview::raster(path.clone(), cx));
-            let mut tab =
-                self.make_tab(editor, options.pin, Some(Preview::Image(image)), window, cx);
+            let mut tab = self.make_tab(
+                editor,
+                options.pin,
+                Some(Preview::Image(image.clone())),
+                window,
+                cx,
+            );
             tab.has_source = false;
+            let id = tab.id;
+            tab._subscriptions.push(cx.subscribe_in(
+                &image,
+                window,
+                move |this, image, event: &ImageEvent, window, cx| match event {
+                    ImageEvent::Edited => {
+                        // Painting pins a preview tab, like typing.
+                        if image.read(cx).is_dirty()
+                            && let Some(tab) = this.tabs.iter_mut().find(|t| t.id == id)
+                        {
+                            tab.pinned = true;
+                        }
+                        this.schedule_session_save(window, cx);
+                        cx.notify();
+                    }
+                    ImageEvent::Saved => {
+                        if let Some(tree) = &this.file_tree {
+                            tree.update(cx, |tree, cx| tree.refresh(cx));
+                        }
+                        this.schedule_session_save(window, cx);
+                        cx.notify();
+                    }
+                    ImageEvent::Moved(path) => {
+                        if let Some(tab) = this.tabs.iter().find(|t| t.id == id) {
+                            tab.editor.update(cx, |e, cx| e.set_path(path.clone(), cx));
+                        }
+                    }
+                    ImageEvent::Message(message) => this.flash_message(message.to_string(), cx),
+                },
+            ));
             tab
         } else {
             let editor = cx.new(|cx| EditorView::open(path.clone(), window, cx));
@@ -1596,9 +1683,9 @@ impl Workspace {
         let id = tab.id;
 
         // Reuse an unpinned, unmodified preview tab.
-        let reuse = self.active.filter(|&ix| {
-            !options.pin && !self.tabs[ix].pinned && !self.tabs[ix].editor.read(cx).is_dirty()
-        });
+        let reuse = self
+            .active
+            .filter(|&ix| !options.pin && !self.tabs[ix].pinned && !self.tabs[ix].is_dirty(cx));
         let ix = match reuse {
             Some(ix) => {
                 let old = std::mem::replace(&mut self.tabs[ix], tab);
@@ -1762,13 +1849,12 @@ impl Workspace {
     /// Closes a tab, asking first if it has unsaved changes.
     pub fn close_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tab) = self.tabs.get(ix) else { return };
-        if !tab.editor.read(cx).is_dirty() {
+        if !tab.is_dirty(cx) {
             self.remove_tab(ix, window, cx);
             return;
         }
         let id = tab.id;
-        let editor = tab.editor.clone();
-        let title = editor.read(cx).title();
+        let title = tab.editor.read(cx).title();
         let answer = window.prompt(
             PromptLevel::Warning,
             &format!("Do you want to save the changes you made to {title}?"),
@@ -1782,11 +1868,16 @@ impl Workspace {
                 return;
             }
             if answer == 0 {
-                let save = this.update_in(cx, |_, window, cx| {
-                    editor.update(cx, |e, cx| e.save(window, cx))
+                let save = this.update_in(cx, |this, window, cx| {
+                    let tab = this.tabs.iter().find(|t| t.id == id)?;
+                    Some(tab.save(window, cx))
                 });
-                let Ok(save) = save else { return };
-                if save.await.is_err() || editor.read_with(cx, |e, _| e.is_dirty()) {
+                let Ok(Some(save)) = save else { return };
+                let saved = save.await.is_ok();
+                let dirty = this.read_with(cx, |this, cx| {
+                    this.tabs.iter().any(|t| t.id == id && t.is_dirty(cx))
+                });
+                if !saved || dirty.unwrap_or(true) {
                     return;
                 }
             }
@@ -2192,7 +2283,7 @@ impl Workspace {
             .map(|(ix, tab)| {
                 let editor = tab.editor.read(cx);
                 let active = Some(ix) == self.active;
-                let dirty = editor.is_dirty();
+                let dirty = tab.is_dirty(cx);
                 let title = editor.title();
                 let detail = details[ix].clone();
                 let icon = editor
@@ -2676,7 +2767,7 @@ impl Workspace {
                     Preview::Image(image) if tab.has_source => {
                         format!("{} · {source_key} for source", image.read(cx).info).into()
                     }
-                    Preview::Image(image) => image.read(cx).info.clone(),
+                    Preview::Image(image) => image.read(cx).status(),
                 }));
             } else {
                 let sels = editor.state.selections();

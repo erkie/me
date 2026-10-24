@@ -4,10 +4,14 @@
 //! Each window has a key: `folder-<hash>` for a folder (so reopening the
 //! folder restores it) or `scratch-<n>` for a window without one. A session
 //! lives in `<data dir>/sessions/<key>/` as `session.json` plus one
-//! `buffer-<n>.txt` per tab with unsaved text.
+//! `buffer-<n>.txt` per tab with unsaved text (`buffer-<n>.png` for an
+//! image with unsaved paint).
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use image::RgbaImage;
 
 use me_text::Rope;
 use serde::{Deserialize, Serialize};
@@ -33,7 +37,8 @@ pub struct WindowSession {
 #[serde(default)]
 pub struct TabSession {
     pub path: Option<PathBuf>,
-    /// Buffer file with unsaved text, relative to the session directory.
+    /// Buffer file with unsaved text (or pixels), relative to the session
+    /// directory.
     pub unsaved: Option<String>,
     pub pinned: bool,
     pub show_preview: bool,
@@ -64,10 +69,12 @@ impl WindowSession {
 }
 
 /// A session ready to write: the description plus the text of buffers that
-/// changed since they were last written (ropes clone cheaply).
+/// changed since they were last written (ropes clone cheaply), and the
+/// pixels of images with unsaved paint.
 pub struct Snapshot {
     pub session: WindowSession,
     pub buffers: Vec<(String, Rope)>,
+    pub images: Vec<(String, Arc<RgbaImage>)>,
 }
 
 fn sessions_dir() -> PathBuf {
@@ -122,6 +129,12 @@ pub fn write(key: &str, snapshot: &Snapshot) -> std::io::Result<()> {
         drop(writer);
         tmp.persist(dir.join(name)).map_err(|e| e.error)?;
     }
+    for (name, pixels) in &snapshot.images {
+        let png = crate::paint::encode_unsaved(pixels).map_err(std::io::Error::other)?;
+        let mut tmp = tempfile::NamedTempFile::new_in(&dir)?;
+        tmp.write_all(&png)?;
+        tmp.persist(dir.join(name)).map_err(|e| e.error)?;
+    }
     let json = serde_json::to_vec_pretty(&snapshot.session).map_err(std::io::Error::other)?;
     let mut tmp = tempfile::NamedTempFile::new_in(&dir)?;
     tmp.write_all(&json)?;
@@ -147,9 +160,9 @@ pub fn load(key: &str) -> Option<WindowSession> {
     serde_json::from_slice(&bytes).ok()
 }
 
-/// The unsaved text a tab session points at.
-pub fn read_buffer(key: &str, name: &str) -> Option<String> {
-    std::fs::read_to_string(dir_for(key).join(name)).ok()
+/// The unsaved text (or PNG) a tab session points at.
+pub fn read_buffer(key: &str, name: &str) -> Option<Vec<u8>> {
+    std::fs::read(dir_for(key).join(name)).ok()
 }
 
 pub fn delete(key: &str) {
@@ -216,6 +229,7 @@ mod tests {
         let snapshot = Snapshot {
             session,
             buffers: vec![("buffer-1.txt".into(), Rope::from_str("unsaved text"))],
+            images: vec![],
         };
         write("folder-test", &snapshot).unwrap();
         std::fs::write(dir_for("folder-test").join("buffer-9.txt"), "stale").unwrap();
@@ -232,7 +246,7 @@ mod tests {
         assert_eq!(loaded.active, Some(1));
         assert_eq!(
             read_buffer("folder-test", "buffer-1.txt").as_deref(),
-            Some("unsaved text")
+            Some(b"unsaved text".as_slice())
         );
         assert!(read_buffer("folder-test", "buffer-9.txt").is_none());
         assert_eq!(list().len(), 1);

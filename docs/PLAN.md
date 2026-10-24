@@ -140,6 +140,19 @@ toggles source and preview for the tab. The preview re-renders when the file
 changes on disk (file watcher) or when the source tab is edited. Relative
 links to other files open in tabs. Relative images resolve against the file.
 
+**Images.** Raster images open on a canvas with a paint toolbar (pencil,
+eraser, fill, eyedropper, line, rectangle, ellipse; brush sizes; swatches
+and a colour picker). The pixels live in memory as RGBA; each stroke is one
+undo step that stores only the rectangle it changed. Zoomed out, the picture
+is drawn as 254-pixel texture tiles with a one-pixel border from their
+neighbours (no seams when scaled), re-uploaded only where pixels change;
+zoomed in to 2× and beyond, each run of same-coloured pixels is a quad, so
+pixels stay crisp. `Cmd+S` encodes the file back in its own format, keeping
+grey images grey, opaque ones without alpha, and the ICC profile; unsaved
+paint goes into the session as a PNG. Animated GIF/WebP/PNG, ICO and 16-bit
+images are view only, since writing them back would lose frames, sizes or
+depth.
+
 **Single instance and the CLI.** The app listens on a per-user Unix domain
 socket (named pipe on Windows). The CLI is a separate tiny binary with no GUI
 dependencies, so it starts in about 1 ms. If no app is listening, the CLI
@@ -217,6 +230,11 @@ conflict. Phase 3 makes it user-configurable in `keymap.json`.
 | Duplicate line / move line | `Cmd+Shift+D` / `Ctrl+Cmd+↑/↓` |
 | Indent / outdent | `Tab` / `Shift+Tab` (with selection), `Cmd+]` / `Cmd+[` |
 | Delete line | `Ctrl+Shift+K` |
+| Image: hand / pencil / eraser / fill / eyedropper | `H` / `B` or `P` / `E` / `G` / `I` (or `Alt+click`) |
+| Image: line / rectangle / ellipse (`Shift` keeps 45° / square / circle) | `L` / `R` / `O` |
+| Image: smaller / bigger brush | `[` / `]` |
+| Image: zoom in / out / fit | `Cmd+=` / `Cmd+-` / `Cmd+0`, `Cmd+scroll`, pinch |
+| Image: straight pencil line from the last stroke | `Shift+click` |
 
 ---
 
@@ -325,6 +343,8 @@ Done:
 * [x] Markdown: typography, local images, code blocks highlighted with the
       editor's grammars, Mermaid diagrams (merman, all diagram types).
 * [x] Image and SVG previews; `.mdc` as markdown; `#!` language detection.
+* [x] Painting on images: tools, zoom to crisp pixels, undo, save back in
+      the file's format, unsaved paint kept in the session.
 
 To do:
 

@@ -24,7 +24,12 @@ code. The plan and the reasoning behind the technology choice are in
 - Seamless markdown preview: `.md`/`.mdc` files open rendered (local
   images, code highlighted like the editor, **Mermaid diagrams** rendered
   natively), and `⇧⌘V` flips to source
-- Images open as pictures; SVGs flip between picture and source
+- Images open as pictures you can **paint on**: pencil, eraser, fill,
+  eyedropper, line, rectangle and ellipse, brush sizes, a palette and a
+  colour picker, zoom down to crisp pixels, undo, and `⌘S` writes the file
+  back as PNG, JPEG, GIF, WebP, BMP or TIFF (Save As converts by extension).
+  Animated images, icons and 16-bit images stay view only. SVGs flip
+  between picture and source
 - `⌘K` command palette with every command and its shortcut
 - Fast syntax highlighting (tree-sitter, viewport only, 20 languages, plus
   `#!` detection for scripts without an extension)

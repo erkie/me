@@ -115,6 +115,25 @@ actions!(
     ]
 );
 
+actions!(
+    image,
+    [
+        HandTool,
+        PencilTool,
+        EraserTool,
+        FillTool,
+        EyedropperTool,
+        LineTool,
+        RectangleTool,
+        EllipseTool,
+        BiggerBrush,
+        SmallerBrush,
+        ZoomIn,
+        ZoomOut,
+        ZoomToFit,
+    ]
+);
+
 /// Open a file in a pinned tab (from a menu).
 #[derive(Clone, Debug, PartialEq, gpui::Action)]
 #[action(namespace = workspace, no_json)]
@@ -311,6 +330,33 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-=", IncreaseFontSize, None),
         KeyBinding::new("secondary--", DecreaseFontSize, None),
         KeyBinding::new("secondary-0", ResetFontSize, None),
+    ]);
+    // Painting on an image. Bound last: these win over the font size keys
+    // and the editor's undo and save while a picture has focus.
+    let image = Some("ImagePreview");
+    cx.bind_keys([
+        KeyBinding::new("h", HandTool, image),
+        KeyBinding::new("b", PencilTool, image),
+        KeyBinding::new("p", PencilTool, image),
+        KeyBinding::new("e", EraserTool, image),
+        KeyBinding::new("g", FillTool, image),
+        KeyBinding::new("i", EyedropperTool, image),
+        KeyBinding::new("l", LineTool, image),
+        KeyBinding::new("r", RectangleTool, image),
+        KeyBinding::new("o", EllipseTool, image),
+        KeyBinding::new("[", SmallerBrush, image),
+        KeyBinding::new("]", BiggerBrush, image),
+        KeyBinding::new("secondary-+", ZoomIn, image),
+        KeyBinding::new("secondary-shift-=", ZoomIn, image),
+        KeyBinding::new("secondary-=", ZoomIn, image),
+        KeyBinding::new("secondary--", ZoomOut, image),
+        KeyBinding::new("secondary-0", ZoomToFit, image),
+        KeyBinding::new("secondary-z", Undo, image),
+        KeyBinding::new("secondary-shift-z", Redo, image),
+        KeyBinding::new("secondary-y", Redo, image),
+        KeyBinding::new("secondary-s", Save, image),
+        KeyBinding::new("secondary-shift-s", SaveAs, image),
+        KeyBinding::new("escape", Cancel, image),
     ]);
     #[cfg(target_os = "macos")]
     cx.bind_keys([

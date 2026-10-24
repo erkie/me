@@ -15,6 +15,7 @@ mod lsp;
 mod markdown;
 mod menus;
 mod mermaid;
+mod paint;
 mod palette;
 mod picker;
 mod platform;

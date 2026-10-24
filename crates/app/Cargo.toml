@@ -55,7 +55,7 @@ dirs.workspace = true
 nucleo.workspace = true
 ignore.workspace = true
 trash = "5"
-image = { version = "0.25", default-features = false }
+image = { version = "0.25", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "tiff", "webp"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
