@@ -525,3 +525,28 @@ fn select_all_matches_from_find() {
         "[cat] dog [cat]",
     );
 }
+
+#[test]
+fn moving_through_wrapped_rows() {
+    // At 10 columns "the quick brown fox" wraps as "the quick " / "brown fox".
+    let mut s = state("the q|uick brown fox\nshort");
+    s.move_display_rows(1, false, 10);
+    assert_eq!(render(&s), "the quick brown| fox\nshort");
+    s.move_display_rows(1, false, 10);
+    assert_eq!(render(&s), "the quick brown fox\nshort|");
+    s.move_display_rows(-1, false, 10);
+    assert_eq!(render(&s), "the quick brown| fox\nshort");
+    s.move_display_rows(-2, false, 10);
+    assert_eq!(render(&s), "|the quick brown fox\nshort");
+}
+
+#[test]
+fn wrapped_row_end_stays_on_its_row() {
+    // Going up from far right of row 2 lands before the boundary of row 1,
+    // not at the start of row 2.
+    let mut s = state("the quick brown fox|");
+    s.move_display_rows(-1, false, 10);
+    assert_eq!(render(&s), "the quick| brown fox");
+    s.move_display_rows(1, true, 10);
+    assert_eq!(render(&s), "the quick[ brown fox]");
+}

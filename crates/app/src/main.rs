@@ -14,6 +14,7 @@ mod markdown;
 mod menus;
 mod platform;
 mod search_panel;
+mod settings;
 mod theme;
 mod workspace;
 
@@ -119,6 +120,7 @@ fn main() {
         trace(started, "app running");
         gpui_component::init(cx);
         trace(started, "components initialized");
+        settings::init(cx);
         theme::init(cx.window_appearance(), cx);
         trace(started, "theme resolved");
         actions::bind_keys(cx);

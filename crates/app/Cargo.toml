@@ -39,12 +39,15 @@ gpui-component = { workspace = true, features = [
     "tree-sitter-yaml",
 ] }
 gpui-kit-assets = "=0.8.0"
+gpui-base.workspace = true
 
 anyhow.workspace = true
 parking_lot.workspace = true
 tempfile.workspace = true
 futures = "0.3"
 serde.workspace = true
+serde_json.workspace = true
+dirs.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"

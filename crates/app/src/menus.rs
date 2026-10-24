@@ -8,6 +8,7 @@ use me_ipc::OpenPath;
 use crate::actions::*;
 use crate::app_state;
 use crate::platform;
+use crate::settings;
 
 pub fn init(cx: &mut App) {
     cx.on_action(|_: &Quit, cx| app_state::quit(cx));
@@ -55,6 +56,10 @@ pub fn init(cx: &mut App) {
     });
     cx.on_action(|_: &InstallCli, cx| platform::install_cli(cx));
     cx.on_action(|_: &MakeDefaultEditor, cx| platform::make_default_editor(cx));
+    cx.on_action(|_: &IncreaseFontSize, cx| settings::change_font_size(1., cx));
+    cx.on_action(|_: &DecreaseFontSize, cx| settings::change_font_size(-1., cx));
+    cx.on_action(|_: &ResetFontSize, cx| settings::change_font_size(0., cx));
+    cx.on_action(|_: &ToggleWordWrap, cx| settings::update(cx, |s| s.word_wrap = !s.word_wrap));
     set_menus(cx);
 }
 

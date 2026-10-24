@@ -177,6 +177,31 @@ pub fn language_for_path(path: &Path) -> Option<&'static LanguageDef> {
         .find(|l| l.extensions.contains(&ext.as_str()))
 }
 
+/// Picks a language from a `#!` line, for scripts without an extension:
+/// `#!/bin/sh`, `#!/usr/bin/env -S python3 -u`, ...
+pub fn language_for_shebang(first_line: &str) -> Option<&'static LanguageDef> {
+    let command = first_line.strip_prefix("#!")?.trim();
+    let mut words = command.split_whitespace();
+    let mut program = words.next()?.rsplit('/').next()?;
+    if program == "env" {
+        program = words.find(|w| !w.starts_with('-') && !w.contains('='))?;
+    }
+    // python3.12 -> python, nodejs -> node
+    let program = program.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+    let name = match program {
+        "sh" | "bash" | "zsh" | "dash" | "ksh" | "ash" | "fish" | "mksh" => "Shell",
+        "python" | "pypy" | "uv" => "Python",
+        "node" | "nodejs" | "deno" | "bun" => "JavaScript",
+        "ts-node" | "tsx" => "TypeScript",
+        "ruby" => "Ruby",
+        "lua" | "luajit" => "Lua",
+        "make" => "Make",
+        "swift" => "Swift",
+        _ => return None,
+    };
+    language_by_name(name)
+}
+
 pub fn language_by_name(name: &str) -> Option<&'static LanguageDef> {
     let name = name.to_ascii_lowercase();
     LANGUAGES
@@ -368,6 +393,17 @@ impl<'a> Iterator for ChunkBytes<'a> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn shebangs() {
+        let name = |line: &str| language_for_shebang(line).map(|l| l.name);
+        assert_eq!(name("#!/bin/sh"), Some("Shell"));
+        assert_eq!(name("#!/usr/bin/env bash"), Some("Shell"));
+        assert_eq!(name("#! /usr/bin/env -S python3.12 -u"), Some("Python"));
+        assert_eq!(name("#!/usr/bin/env node"), Some("JavaScript"));
+        assert_eq!(name("#!/usr/bin/perl"), None);
+        assert_eq!(name("echo hi"), None);
+    }
     use super::*;
     use me_text::EditorState;
 

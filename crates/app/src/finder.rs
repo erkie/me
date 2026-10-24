@@ -18,7 +18,7 @@ use me_project::{FileFinder, FileMatch, split_line_suffix};
 use crate::{file_icons, theme};
 
 const MAX_RESULTS: usize = 200;
-const ROW_HEIGHT: f32 = 44.;
+const ROW_HEIGHT: f32 = 48.;
 const VISIBLE_ROWS: usize = 10;
 
 pub enum FinderEvent {
@@ -221,7 +221,7 @@ impl Render for FinderView {
                     .child(
                         Input::new(&self.input)
                             .appearance(false)
-                            .text_size(px(16.))
+                            .text_size(px(17.))
                             .prefix(
                                 svg()
                                     .path("icons/search.svg")
@@ -253,7 +253,7 @@ impl Render for FinderView {
                     .py(px(6.))
                     .border_t_1()
                     .border_color(theme::palette(cx).border)
-                    .text_size(px(11.))
+                    .text_size(px(12.))
                     .text_color(theme::palette(cx).text_tertiary)
                     .child(status),
             )
@@ -327,13 +327,13 @@ fn render_result(
                 .flex_col()
                 .child(
                     div()
-                        .text_size(px(13.))
+                        .text_size(px(14.))
                         .text_color(palette.text)
                         .child(name_text),
                 )
                 .child(
                     div()
-                        .text_size(px(11.))
+                        .text_size(px(12.))
                         .text_color(palette.text_secondary)
                         .overflow_hidden()
                         .text_ellipsis()

@@ -140,7 +140,7 @@ pub fn toggle_button(
         .items_center()
         .justify_center()
         .rounded(px(5.))
-        .text_size(px(12.))
+        .text_size(px(13.))
         .when(active, |el| {
             el.bg(palette.accent.opacity(0.18))
                 .text_color(palette.accent)
@@ -169,7 +169,7 @@ pub fn text_button(
         .border_1()
         .border_color(palette.border)
         .bg(palette.editor_bg)
-        .text_size(px(12.))
+        .text_size(px(13.))
         .text_color(palette.text)
         .hover(|s| s.bg(palette.hover))
         .child(label)

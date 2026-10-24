@@ -3685,7 +3685,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "core-foundation 0.10.1",
+ "dirs 6.0.0",
  "futures",
+ "gpui-base",
  "gpui-component",
  "gpui-kit-assets",
  "gpui-pre",
@@ -3696,6 +3698,7 @@ dependencies = [
  "me-text",
  "parking_lot",
  "serde",
+ "serde_json",
  "tempfile",
 ]
 

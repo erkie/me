@@ -18,7 +18,7 @@ actions!(
     [SelectPrev, SelectNext, Expand, Collapse, OpenSelected]
 );
 
-pub const ROW_HEIGHT: f32 = 24.;
+pub const ROW_HEIGHT: f32 = 26.;
 
 pub enum FileTreeEvent {
     /// Open a file. `pin` is false for a single click (preview tab).
@@ -306,7 +306,7 @@ fn render_row(
         .items_center()
         .gap(px(5.))
         .rounded(px(5.))
-        .text_size(px(13.))
+        .text_size(px(14.))
         .text_color(text_color)
         .when(selected, |el| {
             el.bg(if focused {

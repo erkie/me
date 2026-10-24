@@ -15,6 +15,7 @@ use crate::movement::{
 };
 use crate::search::SearchQuery;
 use crate::selection::{Selection, SelectionSet};
+use crate::wrap::{row_of, row_range, row_visual_col, wrap_line};
 
 /// Text copied from the editor.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -795,6 +796,57 @@ impl EditorState {
             }
             let (c, _) = char_col_at_visual(this.doc.line(target), goal, tab_width);
             Selection::cursor(this.doc.line_start(target) + c).with_goal(Some(goal))
+        });
+    }
+
+    /// Up/down by `rows` display rows of soft-wrapped text (lines wrapped at
+    /// `max_cols`, see [`crate::wrap`]). The goal is the visual column
+    /// within the row.
+    pub fn move_display_rows(&mut self, rows: isize, extend: bool, max_cols: usize) {
+        let tab_width = self.tab_width;
+        self.move_each(extend, |this, s| {
+            let doc = &this.doc;
+            let (mut line, col) = doc.line_col(s.head);
+            let mut wrapped = wrap_line(doc.line(line), max_cols, tab_width);
+            let mut row = row_of(&wrapped, col);
+            let goal = s
+                .goal
+                .unwrap_or_else(|| row_visual_col(doc.line(line), wrapped[row], col, tab_width));
+            let mut remaining = rows;
+            while remaining < 0 {
+                if row > 0 {
+                    row -= 1;
+                } else if line > 0 {
+                    line -= 1;
+                    wrapped = wrap_line(doc.line(line), max_cols, tab_width);
+                    row = wrapped.len() - 1;
+                } else {
+                    return Selection::cursor(0).with_goal(Some(goal));
+                }
+                remaining += 1;
+            }
+            while remaining > 0 {
+                if row + 1 < wrapped.len() {
+                    row += 1;
+                } else if line + 1 < doc.len_lines() {
+                    line += 1;
+                    wrapped = wrap_line(doc.line(line), max_cols, tab_width);
+                    row = 0;
+                } else {
+                    return Selection::cursor(doc.len_chars()).with_goal(Some(goal));
+                }
+                remaining -= 1;
+            }
+            let (start, end) = row_range(&wrapped, row, doc.line_len(line));
+            let text = doc.line(line);
+            let (c, _) = char_col_at_visual(text.slice(start..end), goal, tab_width);
+            let mut col = start + c;
+            // The end of a wrapped row is the start of the next one; stay on
+            // this row.
+            if row + 1 < wrapped.len() && col >= end && end > start {
+                col = end - 1;
+            }
+            Selection::cursor(doc.line_start(line) + col).with_goal(Some(goal))
         });
     }
 

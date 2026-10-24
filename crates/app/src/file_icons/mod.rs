@@ -55,12 +55,15 @@ pub struct FileIcon {
     pub color: Hsla,
 }
 
+/// Types Seti doesn't know, checked before its table.
+static EXTRA_RULES: &[Rule] = &[(Match::EndsWith(".mdc"), "markdown", IconColor::Blue)];
+
 /// The icon for a file name. As in Seti's stylesheet, the last matching
 /// rule wins, so `README.md` beats `.md`.
 pub fn for_name(name: &str, is_dark: bool) -> FileIcon {
-    let (icon, color) = table::RULES
+    let (icon, color) = EXTRA_RULES
         .iter()
-        .rev()
+        .chain(table::RULES.iter().rev())
         .find(|(pattern, _, _)| match pattern {
             Match::EndsWith(s) => name.ends_with(s),
             Match::Contains(s) => name.contains(s),
@@ -95,6 +98,7 @@ mod tests {
         assert_eq!(icon("growth_model.py"), "file-icons/python.svg");
         assert_eq!(icon("main.rs"), "file-icons/rust.svg");
         assert_eq!(icon("Dockerfile"), "file-icons/docker.svg");
+        assert_eq!(icon("rules.mdc"), "file-icons/markdown.svg");
         assert_eq!(icon("unknown.zzz"), "file-icons/default.svg");
     }
 

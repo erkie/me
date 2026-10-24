@@ -3,7 +3,7 @@
 //! `secondary` is Cmd on macOS and Ctrl elsewhere. Defaults follow Sublime
 //! Text, with VS Code aliases where they don't conflict.
 
-use gpui::{App, KeyBinding, actions};
+use gpui::{App, KeyBinding, SharedString, actions};
 
 actions!(
     editor,
@@ -93,8 +93,29 @@ actions!(
         ActivateTab8,
         ActivateTab9,
         RevealInSidebar,
+        RevealInFinder,
+        CopyPath,
+        CopyRelativePath,
+        ToggleCommandPalette,
+        CloseOtherTabs,
+        CloseTabsToTheRight,
     ]
 );
+
+/// Highlight the active file as `name` (a language name), or as plain text.
+#[derive(Clone, Debug, PartialEq, gpui::Action)]
+#[action(namespace = editor, no_json)]
+pub struct SetLanguage {
+    pub name: Option<SharedString>,
+}
+
+/// Indent the active file with tabs or with `width` spaces.
+#[derive(Clone, Debug, PartialEq, gpui::Action)]
+#[action(namespace = editor, no_json)]
+pub struct SetIndentation {
+    pub hard_tabs: bool,
+    pub width: usize,
+}
 
 actions!(
     app,
@@ -113,6 +134,10 @@ actions!(
         Zoom,
         InstallCli,
         MakeDefaultEditor,
+        IncreaseFontSize,
+        DecreaseFontSize,
+        ResetFontSize,
+        ToggleWordWrap,
     ]
 );
 
@@ -180,7 +205,6 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-l", SelectLine, editor),
         KeyBinding::new("secondary-shift-l", SplitIntoLines, editor),
         KeyBinding::new("secondary-d", AddNextOccurrence, editor),
-        KeyBinding::new("secondary-k secondary-d", SkipOccurrence, editor),
         KeyBinding::new("ctrl-shift-up", AddCursorAbove, editor),
         KeyBinding::new("ctrl-shift-down", AddCursorBelow, editor),
         KeyBinding::new("secondary-alt-up", AddCursorAbove, editor),
@@ -200,7 +224,6 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("f3", FindNext, workspace),
         KeyBinding::new("shift-f3", FindPrevious, workspace),
         KeyBinding::new("secondary-b", ToggleSidebar, workspace),
-        KeyBinding::new("secondary-k secondary-b", ToggleSidebar, workspace),
         KeyBinding::new("secondary-w", CloseTab, workspace),
         KeyBinding::new("secondary-shift-t", ReopenClosedTab, workspace),
         KeyBinding::new("secondary-shift-]", NextTab, workspace),
@@ -218,7 +241,13 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-7", ActivateTab7, workspace),
         KeyBinding::new("secondary-8", ActivateTab8, workspace),
         KeyBinding::new("secondary-9", ActivateTab9, workspace),
-        KeyBinding::new("secondary-k secondary-r", RevealInSidebar, workspace),
+        KeyBinding::new("secondary-shift-e", RevealInSidebar, workspace),
+        KeyBinding::new("secondary-alt-r", RevealInFinder, workspace),
+        KeyBinding::new("secondary-alt-c", CopyPath, workspace),
+        KeyBinding::new("secondary-alt-shift-c", CopyRelativePath, workspace),
+        KeyBinding::new("secondary-k", ToggleCommandPalette, workspace),
+        KeyBinding::new("secondary-shift-p", ToggleCommandPalette, workspace),
+        KeyBinding::new("alt-z", ToggleWordWrap, workspace),
         // App
         KeyBinding::new("secondary-o", Open, None),
         KeyBinding::new("secondary-shift-o", OpenFolder, None),
@@ -226,6 +255,11 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-shift-n", NewWindow, None),
         KeyBinding::new("secondary-shift-w", CloseWindow, None),
         KeyBinding::new("secondary-q", Quit, None),
+        KeyBinding::new("secondary-=", IncreaseFontSize, None),
+        KeyBinding::new("secondary-+", IncreaseFontSize, None),
+        KeyBinding::new("secondary-shift-=", IncreaseFontSize, None),
+        KeyBinding::new("secondary--", DecreaseFontSize, None),
+        KeyBinding::new("secondary-0", ResetFontSize, None),
     ]);
     #[cfg(target_os = "macos")]
     cx.bind_keys([

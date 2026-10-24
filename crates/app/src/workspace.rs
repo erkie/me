@@ -23,7 +23,8 @@ use crate::theme;
 
 /// Height of the title/tab bar. On macOS the traffic lights sit in it.
 pub const TITLE_BAR_HEIGHT: f32 = if cfg!(target_os = "macos") { 38. } else { 34. };
-const STATUS_BAR_HEIGHT: f32 = 24.;
+const STATUS_BAR_HEIGHT: f32 = 26.;
+const TAB_TEXT_SIZE: f32 = 13.5;
 const MIN_SIDEBAR: f32 = 160.;
 const MAX_SIDEBAR: f32 = 600.;
 
@@ -240,6 +241,42 @@ impl Workspace {
 
     pub fn active_editor(&self) -> Option<Entity<EditorView>> {
         self.active_tab().map(|t| t.editor.clone())
+    }
+
+    fn active_path(&self, cx: &App) -> Option<PathBuf> {
+        self.active_editor()
+            .and_then(|e| e.read(cx).path().map(Path::to_path_buf))
+    }
+
+    /// `path` relative to the folder, or absolute when outside it.
+    fn relative_path(&self, path: &Path) -> String {
+        self.root
+            .as_ref()
+            .and_then(|root| path.strip_prefix(root).ok())
+            .unwrap_or(path)
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// Closes every unmodified tab `keep` says no to.
+    fn close_tabs_where(
+        &mut self,
+        mut close: impl FnMut(usize) -> bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ids: Vec<u64> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .filter(|(ix, t)| close(*ix) && !t.editor.read(cx).is_dirty())
+            .map(|(_, t)| t.id)
+            .collect();
+        for id in ids {
+            if let Some(ix) = self.tabs.iter().position(|t| t.id == id) {
+                self.remove_tab(ix, window, cx);
+            }
+        }
     }
 
     fn focus_active(&self, window: &mut Window, cx: &mut App) {
@@ -739,7 +776,7 @@ impl Workspace {
                     div()
                         .px(px(16.))
                         .pb(px(4.))
-                        .text_size(px(11.))
+                        .text_size(px(12.))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(palette.text_tertiary)
                         .child(folder),
@@ -811,7 +848,7 @@ impl Workspace {
                     strikethrough: None,
                 };
                 let text_width = text_system
-                    .shape_line(title.clone(), px(12.5), &[run], None)
+                    .shape_line(title.clone(), px(TAB_TEXT_SIZE), &[run], None)
                     .width;
                 let width = (text_width + px(78.)).clamp(px(96.), px(260.));
                 div()
@@ -826,7 +863,7 @@ impl Workspace {
                     .gap(px(6.))
                     .border_r_1()
                     .border_color(palette.border)
-                    .text_size(px(12.5))
+                    .text_size(px(TAB_TEXT_SIZE))
                     .when(active, |el| {
                         el.bg(palette.tab_active_bg).text_color(palette.text)
                     })
@@ -962,7 +999,7 @@ impl Workspace {
                         .items_center()
                         .px(px(10.))
                         .gap(px(5.))
-                        .text_size(px(12.))
+                        .text_size(px(13.))
                         .text_color(palette.text_secondary)
                         .hover(|s| s.text_color(palette.text))
                         .child(
@@ -1036,7 +1073,7 @@ impl Workspace {
             .border_t_1()
             .border_color(palette.border)
             .bg(palette.tab_bar_bg)
-            .text_size(px(11.5))
+            .text_size(px(12.5))
             .text_color(palette.text_secondary)
             .child(div().flex().gap(px(14.)).children(left))
             .child(div().flex().gap(px(14.)).children(right))
@@ -1077,7 +1114,7 @@ impl Workspace {
                     .flex()
                     .flex_col()
                     .gap(px(6.))
-                    .text_size(px(13.))
+                    .text_size(px(14.))
                     .child(hint(
                         if cfg!(target_os = "macos") {
                             "⌘T"
@@ -1216,6 +1253,32 @@ impl Render for Workspace {
             .on_action(
                 cx.listener(|this, _: &TogglePreview, window, cx| this.toggle_preview(window, cx)),
             )
+            .on_action(cx.listener(|this, _: &RevealInFinder, _, cx| {
+                if let Some(path) = this.active_path(cx) {
+                    cx.reveal_path(&path);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &CopyPath, _, cx| {
+                if let Some(path) = this.active_path(cx) {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                        path.to_string_lossy().into_owned(),
+                    ));
+                }
+            }))
+            .on_action(cx.listener(|this, _: &CopyRelativePath, _, cx| {
+                if let Some(path) = this.active_path(cx) {
+                    let relative = this.relative_path(&path);
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(relative));
+                }
+            }))
+            .on_action(cx.listener(|this, _: &CloseOtherTabs, window, cx| {
+                let active = this.active;
+                this.close_tabs_where(|ix| Some(ix) != active, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &CloseTabsToTheRight, window, cx| {
+                let active = this.active.unwrap_or(usize::MAX);
+                this.close_tabs_where(|ix| ix > active, window, cx);
+            }))
             .on_action(cx.listener(|this, _: &CloseTab, window, cx| {
                 if this.finder_open {
                     this.finder_open = false;

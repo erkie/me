@@ -8,6 +8,15 @@ use gpui::{App, PromptLevel};
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub const BUNDLE_ID: &str = "com.erkie.me";
 
+/// "Reveal in Finder" in the platform's words.
+pub const REVEAL_LABEL: &str = if cfg!(target_os = "macos") {
+    "Reveal in Finder"
+} else if cfg!(target_os = "windows") {
+    "Reveal in File Explorer"
+} else {
+    "Reveal in File Manager"
+};
+
 /// Content types we offer to become the default editor for.
 #[cfg(target_os = "macos")]
 const CONTENT_TYPES: &[&str] = &[

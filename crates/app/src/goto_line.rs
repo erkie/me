@@ -80,11 +80,11 @@ impl Render for GoToLinePrompt {
             .border_color(palette.border)
             .rounded(px(12.))
             .shadow_lg()
-            .child(Input::new(&self.input).appearance(false).text_size(px(15.)))
+            .child(Input::new(&self.input).appearance(false).text_size(px(16.)))
             .child(
                 div()
                     .px(px(4.))
-                    .text_size(px(11.))
+                    .text_size(px(12.))
                     .text_color(palette.text_tertiary)
                     .child(self.hint.clone()),
             )

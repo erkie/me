@@ -31,6 +31,8 @@ pub struct Palette {
     pub ignored_text: Hsla,
     pub modified_dot: Hsla,
     pub overlay_bg: Hsla,
+    /// Background of code in the markdown preview.
+    pub code_bg: Hsla,
     syntax: SyntaxColors,
 }
 
@@ -88,6 +90,7 @@ impl Palette {
             ignored_text: rgb(0xa8a8ad).into(),
             modified_dot: rgb(0x6e6e73).into(),
             overlay_bg: rgb(0xfbfbfd).into(),
+            code_bg: rgb(0xf4f4f6).into(),
             syntax: SyntaxColors {
                 comment: rgb(0x707f8c).into(),
                 keyword: rgb(0x9b2393).into(),
@@ -140,6 +143,7 @@ impl Palette {
             ignored_text: rgb(0x6e6e73).into(),
             modified_dot: rgb(0xa1a1a6).into(),
             overlay_bg: rgb(0x2c2c31).into(),
+            code_bg: rgb(0x2a2a30).into(),
             syntax: SyntaxColors {
                 comment: rgb(0x7f8c98).into(),
                 keyword: rgb(0xfc5fa3).into(),
@@ -227,11 +231,23 @@ const MONO_CANDIDATES: &[&str] = if cfg!(target_os = "macos") {
     ]
 };
 
-/// Picks the first monospace family that actually resolves. Probing a few
-/// names is much cheaper than enumerating every installed font.
-fn resolve_mono(cx: &App) -> SharedString {
+/// UI fonts for platforms without a system UI font alias that has weights
+/// (GPUI maps `.SystemUIFont` to San Francisco on macOS).
+const UI_CANDIDATES: &[&str] = &[
+    "Inter",
+    "Cantarell",
+    "Ubuntu",
+    "Noto Sans",
+    "DejaVu Sans",
+    "Liberation Sans",
+    "Segoe UI",
+];
+
+/// Picks the first family that actually resolves. Probing a few names is
+/// much cheaper than enumerating every installed font.
+fn resolve_family(candidates: &[&'static str], cx: &App) -> SharedString {
     let text_system = cx.text_system();
-    for family in MONO_CANDIDATES {
+    for family in candidates {
         let id = text_system.resolve_font(&font(*family));
         if text_system
             .get_font_for_id(id)
@@ -240,13 +256,18 @@ fn resolve_mono(cx: &App) -> SharedString {
             return SharedString::from(*family);
         }
     }
-    SharedString::from(MONO_CANDIDATES[0])
+    SharedString::from(candidates[0])
 }
 
 pub fn init(appearance: WindowAppearance, cx: &mut App) {
+    let ui = if cfg!(target_os = "macos") {
+        ".SystemUIFont".into()
+    } else {
+        resolve_family(UI_CANDIDATES, cx)
+    };
     let fonts = Fonts {
-        ui: ".SystemUIFont".into(),
-        mono: resolve_mono(cx),
+        ui,
+        mono: resolve_family(MONO_CANDIDATES, cx),
     };
     cx.set_global(fonts);
     apply(appearance, cx);
@@ -272,11 +293,13 @@ pub fn apply(appearance: WindowAppearance, cx: &mut App) {
     };
     Theme::change(mode, None, cx);
     let mono = fonts(cx).mono.clone();
+    let ui = fonts(cx).ui.clone();
     let p = palette.clone();
     Theme::update(cx, move |theme| {
         theme.mono_font_family = mono;
-        theme.font_size = gpui::px(13.);
-        theme.mono_font_size = gpui::px(12.);
+        theme.font_family = ui;
+        theme.font_size = gpui::px(14.);
+        theme.mono_font_size = gpui::px(13.);
         theme.background = p.editor_bg;
         theme.foreground = p.text;
         theme.border = p.border;
@@ -291,6 +314,8 @@ pub fn apply(appearance: WindowAppearance, cx: &mut App) {
         theme.popover_foreground = p.text;
         theme.list_active = p.row_selected;
         theme.list_hover = p.hover;
+        theme.muted = p.code_bg;
+        theme.table_head = p.code_bg;
     });
     cx.set_global(palette);
     cx.refresh_windows();

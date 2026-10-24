@@ -23,7 +23,7 @@ use crate::find_bar::{text_button, toggle_button};
 use crate::theme;
 
 const MAX_MATCHES: usize = 20_000;
-const ROW_HEIGHT: f32 = 22.;
+const ROW_HEIGHT: f32 = 24.;
 
 pub enum SearchPanelEvent {
     Open {
@@ -419,7 +419,7 @@ impl Render for SearchPanel {
                             .justify_between()
                             .child(
                                 div()
-                                    .text_size(px(11.))
+                                    .text_size(px(12.))
                                     .text_color(palette.text_secondary)
                                     .child(summary),
                             )
@@ -519,7 +519,7 @@ fn render_row(
             .flex()
             .items_center()
             .gap(px(4.))
-            .text_size(px(12.))
+            .text_size(px(13.))
             .hover(|s| s.bg(palette.hover))
             .child(
                 svg()
@@ -545,7 +545,7 @@ fn render_row(
                     .px(px(6.))
                     .rounded_full()
                     .bg(palette.hover)
-                    .text_size(px(10.))
+                    .text_size(px(11.))
                     .text_color(palette.text_secondary)
                     .child(count.to_string()),
             )
@@ -591,7 +591,7 @@ fn render_row(
                     div()
                         .w(px(32.))
                         .flex_none()
-                        .text_size(px(10.5))
+                        .text_size(px(11.5))
                         .text_color(palette.text_tertiary)
                         .child(line.to_string()),
                 )
@@ -600,7 +600,7 @@ fn render_row(
                         .flex_1()
                         .overflow_hidden()
                         .whitespace_nowrap()
-                        .text_size(px(11.5))
+                        .text_size(px(12.5))
                         .font_family(mono.clone())
                         .child(StyledText::new(preview).with_highlights(highlights)),
                 )

@@ -13,6 +13,7 @@ pub mod history;
 pub mod movement;
 pub mod search;
 pub mod selection;
+pub mod wrap;
 
 pub use change::{Assoc, ByteEdit, Change, ChangeSet};
 pub use document::{Document, LineEnding};

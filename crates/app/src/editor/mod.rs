@@ -14,14 +14,17 @@ use gpui::{
     IntoElement, KeyContext, ParentElement, Pixels, Point, Render, SharedString, Styled, Task,
     UTF16Selection, Window, div, px,
 };
-use me_syntax::{DEFAULT_MAX_FILE_SIZE, Syntax, language_for_path};
+use me_syntax::{
+    DEFAULT_MAX_FILE_SIZE, LanguageDef, Syntax, language_by_name, language_for_path,
+    language_for_shebang,
+};
 use me_text::{
     ClipboardText, Document, EditKind, EditorState, Matcher, SearchQuery, Selection, SelectionSet,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::actions::*;
-use element::{EditorElement, LayoutSnapshot};
+use element::{EditorElement, LayoutSnapshot, WrapCache};
 
 /// Files above this size are read on a background thread.
 const SYNC_LOAD_LIMIT: u64 = 2 * 1024 * 1024;
@@ -42,8 +45,10 @@ pub enum Autoscroll {
     Center,
 }
 
-/// Scroll offset. Vertical is f64: in a multi-million-line file the offset
-/// is tens of millions of pixels, beyond what f32 represents exactly.
+/// Scroll offset. `y` is a fractional line index: the integer part is the
+/// top line, the fraction how far down that line's rows (several, when
+/// wrapped) the viewport starts. It stays valid across font size and wrap
+/// width changes, and f64 keeps it exact in multi-million-line files.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ScrollPosition {
     pub x: Pixels,
@@ -87,6 +92,10 @@ pub struct EditorView {
     parse_task: Option<Task<()>>,
     load_task: Option<Task<()>>,
     pub(crate) scroll: ScrollPosition,
+    /// Vertical pixels to scroll by on the next frame (the element knows the
+    /// row geometry needed to turn pixels into lines).
+    pub(crate) pending_scroll: f64,
+    pub(crate) wrap_cache: WrapCache,
     pub(crate) autoscroll: Option<Autoscroll>,
     pub(crate) layout: Option<LayoutSnapshot>,
     drag: Option<Drag>,
@@ -133,6 +142,8 @@ impl EditorView {
             parse_task: None,
             load_task: None,
             scroll: ScrollPosition::default(),
+            pending_scroll: 0.,
+            wrap_cache: WrapCache::default(),
             autoscroll: None,
             layout: None,
             drag: None,
@@ -197,7 +208,7 @@ impl EditorView {
         self.scroll = ScrollPosition::default();
         if let Some(path) = &self.path
             && self.state.doc.len_bytes() <= DEFAULT_MAX_FILE_SIZE
-            && let Some(language) = language_for_path(path).and_then(|def| def.load())
+            && let Some(language) = self.detect_language(path).and_then(|def| def.load())
         {
             let mut syntax = Syntax::new(language);
             // Parse small files right away so the first frame is colored.
@@ -209,6 +220,18 @@ impl EditorView {
                 self.schedule_parse(cx);
             }
         }
+    }
+
+    /// The language for `path`, falling back to a `#!` line for scripts
+    /// without an extension.
+    fn detect_language(&self, path: &Path) -> Option<&'static LanguageDef> {
+        language_for_path(path).or_else(|| {
+            if path.extension().is_some() {
+                return None;
+            }
+            let first: String = self.state.doc.line(0).chars().take(200).collect();
+            language_for_shebang(&first)
+        })
     }
 
     pub fn path(&self) -> Option<&Path> {
@@ -236,6 +259,19 @@ impl EditorView {
 
     pub fn language_name(&self) -> Option<&'static str> {
         self.syntax.as_ref().map(|s| s.language().def.name)
+    }
+
+    /// Highlights the file as `language`, or as plain text.
+    pub fn set_language(&mut self, language: Option<&'static LanguageDef>, cx: &mut Context<Self>) {
+        self.syntax = language.and_then(|def| def.load()).map(Syntax::new);
+        self.schedule_parse(cx);
+        cx.notify();
+    }
+
+    pub fn set_indentation(&mut self, hard_tabs: bool, width: usize, cx: &mut Context<Self>) {
+        self.state.hard_tabs = hard_tabs;
+        self.state.tab_width = width.clamp(1, 16);
+        cx.notify();
     }
 
     pub(crate) fn syntax(&self) -> Option<&Syntax> {
@@ -407,21 +443,29 @@ impl EditorView {
         self.did_change(cx);
     }
 
-    fn page_lines(&self) -> isize {
+    fn page_rows(&self) -> isize {
         self.layout
             .as_ref()
             .map(|l| ((l.bounds.size.height / l.line_height) as isize - 2).max(1))
             .unwrap_or(30)
     }
 
+    /// Up/down by display rows: lines, or wrapped rows with word wrap on.
+    fn vertical(&mut self, rows: isize, extend: bool, cx: &mut Context<Self>) {
+        let wrap = self.layout.as_ref().and_then(|l| l.wrap_cols);
+        self.motion(cx, |s| match wrap {
+            Some(cols) => s.move_display_rows(rows, extend, cols),
+            None => s.move_vertically(rows, extend),
+        });
+    }
+
     fn page(&mut self, down: bool, extend: bool, cx: &mut Context<Self>) {
-        let lines = self.page_lines();
-        let delta = if down { lines } else { -lines };
+        let rows = self.page_rows();
+        let delta = if down { rows } else { -rows };
         if let Some(layout) = &self.layout {
-            let line_height = f32::from(layout.line_height) as f64;
-            self.scroll.y = (self.scroll.y + line_height * delta as f64).max(0.);
+            self.pending_scroll += f32::from(layout.line_height) as f64 * delta as f64;
         }
-        self.motion(cx, |s| s.move_vertically(delta, extend));
+        self.vertical(delta, extend, cx);
     }
 
     // ---------------------------------------------------------------------
@@ -725,9 +769,53 @@ impl EditorView {
 
     pub(crate) fn scroll_by(&mut self, delta: Point<Pixels>, cx: &mut Context<Self>) {
         self.scroll.x = (self.scroll.x - delta.x).max(px(0.));
-        self.scroll.y = (self.scroll.y - f32::from(delta.y) as f64).max(0.);
+        self.pending_scroll -= f32::from(delta.y) as f64;
         self.autoscroll = None;
         cx.notify();
+    }
+
+    /// Right click: moves the cursor there unless the click is inside a
+    /// selection, then shows the context menu.
+    pub(crate) fn context_menu(
+        &mut self,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        window.focus(&self.focus_handle, cx);
+        if let Some(layout) = &self.layout {
+            let hit = layout.hit(position, &self.state);
+            let inside = self
+                .state
+                .selections()
+                .iter()
+                .any(|s| !s.is_empty() && s.start() <= hit.pos && hit.pos <= s.end());
+            if !inside {
+                self.state.set_cursor(hit.pos);
+                self.did_move(cx);
+            }
+        }
+        let mut menu = gpui_component::native_menu::NativeMenu::new()
+            .menu_with_disabled("Cut", self.read_only, Box::new(Cut))
+            .menu("Copy", Box::new(Copy))
+            .menu_with_disabled("Paste", self.read_only, Box::new(Paste))
+            .separator()
+            .menu("Select All", Box::new(SelectAll))
+            .separator()
+            .menu_with_disabled("Toggle Comment", self.read_only, Box::new(ToggleComment))
+            .menu_with_check(
+                "Word Wrap",
+                crate::settings::get(cx).word_wrap,
+                Box::new(ToggleWordWrap),
+            );
+        if self.path.is_some() {
+            menu = menu
+                .separator()
+                .menu(crate::platform::REVEAL_LABEL, Box::new(RevealInFinder))
+                .menu("Copy Path", Box::new(CopyPath))
+                .menu("Copy Relative Path", Box::new(CopyRelativePath));
+        }
+        menu.show(position, window, cx);
     }
 
     // ---------------------------------------------------------------------
@@ -927,10 +1015,8 @@ impl Render for EditorView {
             .on_action(
                 cx.listener(|this, _: &MoveRight, _, cx| this.motion(cx, |s| s.move_right(false))),
             )
-            .on_action(cx.listener(|this, _: &MoveUp, _, cx| this.motion(cx, |s| s.move_up(false))))
-            .on_action(
-                cx.listener(|this, _: &MoveDown, _, cx| this.motion(cx, |s| s.move_down(false))),
-            )
+            .on_action(cx.listener(|this, _: &MoveUp, _, cx| this.vertical(-1, false, cx)))
+            .on_action(cx.listener(|this, _: &MoveDown, _, cx| this.vertical(1, false, cx)))
             .on_action(cx.listener(|this, _: &MoveWordLeft, _, cx| {
                 this.motion(cx, |s| s.move_word_left(false))
             }))
@@ -959,12 +1045,8 @@ impl Render for EditorView {
             .on_action(
                 cx.listener(|this, _: &SelectRight, _, cx| this.motion(cx, |s| s.move_right(true))),
             )
-            .on_action(
-                cx.listener(|this, _: &SelectUp, _, cx| this.motion(cx, |s| s.move_up(true))),
-            )
-            .on_action(
-                cx.listener(|this, _: &SelectDown, _, cx| this.motion(cx, |s| s.move_down(true))),
-            )
+            .on_action(cx.listener(|this, _: &SelectUp, _, cx| this.vertical(-1, true, cx)))
+            .on_action(cx.listener(|this, _: &SelectDown, _, cx| this.vertical(1, true, cx)))
             .on_action(cx.listener(|this, _: &SelectWordLeft, _, cx| {
                 this.motion(cx, |s| s.move_word_left(true))
             }))
@@ -1107,6 +1189,13 @@ impl Render for EditorView {
             }))
             .on_action(cx.listener(|this, _: &SaveAs, window, cx| {
                 this.save_as(window, cx).detach();
+            }))
+            .on_action(cx.listener(|this, action: &SetLanguage, _, cx| {
+                let language = action.name.as_ref().and_then(|n| language_by_name(n));
+                this.set_language(language, cx);
+            }))
+            .on_action(cx.listener(|this, action: &SetIndentation, _, cx| {
+                this.set_indentation(action.hard_tabs, action.width, cx);
             }))
             .child(EditorElement::new(cx.entity()))
     }

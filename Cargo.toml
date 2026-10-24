@@ -19,6 +19,7 @@ me-ipc = { path = "crates/ipc" }
 gpui = { package = "gpui-pre", version = "=0.3.9" }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.9", features = ["font-kit", "x11", "wayland"] }
 gpui-component = { version = "=0.8.0", default-features = false }
+gpui-base = "=0.8.0"
 
 anyhow = "1"
 crossbeam-channel = "0.5"

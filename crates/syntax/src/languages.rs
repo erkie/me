@@ -194,7 +194,7 @@ pub static LANGUAGES: &[LanguageDef] = &[
     },
     LanguageDef {
         name: "Markdown",
-        extensions: &["md", "markdown", "mdx", "mdown", "mkd"],
+        extensions: &["md", "markdown", "mdx", "mdc", "mdown", "mkd"],
         filenames: &[],
         line_comment: None,
         grammar: grammar!(tree_sitter_md),
