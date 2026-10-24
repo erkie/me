@@ -301,6 +301,7 @@ fn render_result(
     .with_highlights(to_byte_ranges(dir, 0));
     let icon = file_icons::for_name(name, palette.is_dark);
     let row = div()
+        .id("row")
         .w_full()
         .h(px(ROW_HEIGHT))
         .px(px(10.))

@@ -294,7 +294,10 @@ fn render_row(
         (icon.path, color, 24.)
     };
     let name: SharedString = entry.name.clone().into();
+    // The hovered element needs an id: GPUI only repaints on hover changes
+    // for elements that keep state.
     let row_el = div()
+        .id("row")
         .w_full()
         .h(px(ROW_HEIGHT))
         .pl(px(6. + row.depth as f32 * 14.))
