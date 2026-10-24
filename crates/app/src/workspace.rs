@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 
 use gpui::{
     AnyElement, App, AppContext, ClickEvent, Context, CursorStyle, Entity, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, KeyContext, MouseButton, MouseMoveEvent, ParentElement,
-    PromptLevel, Render, SharedString, StatefulInteractiveElement, Styled, Subscription, Window,
-    div, prelude::FluentBuilder, px, svg,
+    InteractiveElement, IntoElement, KeyContext, MouseButton, MouseDownEvent, MouseMoveEvent,
+    ParentElement, PromptLevel, Render, SharedString, StatefulInteractiveElement, Styled,
+    Subscription, Window, div, prelude::FluentBuilder, px, svg,
 };
 
 use crate::actions::*;
@@ -52,6 +52,44 @@ impl Tab {
             (Some(preview), true) => preview.focus_handle(cx),
             _ => self.editor.focus_handle(cx),
         }
+    }
+}
+
+/// A tab being dragged to a new position.
+#[derive(Clone)]
+struct DraggedTab {
+    id: u64,
+    title: SharedString,
+    icon: Option<crate::file_icons::FileIcon>,
+}
+
+impl Render for DraggedTab {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = theme::palette(cx);
+        div()
+            .h(px(28.))
+            .px(px(10.))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .rounded(px(6.))
+            .border_1()
+            .border_color(palette.border)
+            .bg(palette.tab_active_bg)
+            .shadow_md()
+            .font_family(theme::fonts(cx).ui.clone())
+            .text_size(px(TAB_TEXT_SIZE))
+            .text_color(palette.text)
+            .when_some(self.icon.clone(), |el, icon| {
+                el.child(
+                    svg()
+                        .path(icon.path)
+                        .size(px(22.))
+                        .mx(px(-3.))
+                        .text_color(icon.color),
+                )
+            })
+            .child(self.title.clone())
     }
 }
 
@@ -334,6 +372,28 @@ impl Workspace {
             }
         }
         self.update_title(window, cx);
+        cx.notify();
+    }
+
+    /// Moves the dragged tab to `to_id`'s place, or to the end.
+    fn move_tab(&mut self, from_id: u64, to_id: Option<u64>, cx: &mut Context<Self>) {
+        let Some(from) = self.tabs.iter().position(|t| t.id == from_id) else {
+            return;
+        };
+        let to = match to_id {
+            Some(id) => match self.tabs.iter().position(|t| t.id == id) {
+                Some(ix) => ix,
+                None => return,
+            },
+            None => self.tabs.len() - 1,
+        };
+        if from == to {
+            return;
+        }
+        let active_id = self.active.map(|a| self.tabs[a].id);
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(to, tab);
+        self.active = active_id.and_then(|id| self.tabs.iter().position(|t| t.id == id));
         cx.notify();
     }
 
@@ -978,6 +1038,7 @@ impl Workspace {
                     .then(|| crate::file_icons::for_name(&title, palette.is_dark));
                 let id = tab.id;
                 let close_color = palette.text_secondary;
+                let drop_highlight = palette.accent.opacity(0.18);
                 // Size the tab to its title: padding, icon, gaps and the
                 // close button take 64px, plus room for the ellipsis logic.
                 let run = gpui::TextRun {
@@ -1013,7 +1074,7 @@ impl Workspace {
                             .hover(|s| s.bg(palette.hover))
                     })
                     .when(!tab.pinned, |el| el.italic())
-                    .when_some(icon, |el, icon| {
+                    .when_some(icon.clone(), |el, icon| {
                         el.child(
                             svg()
                                 .path(icon.path)
@@ -1030,7 +1091,7 @@ impl Workspace {
                             .overflow_hidden()
                             .text_ellipsis()
                             .whitespace_nowrap()
-                            .child(title),
+                            .child(title.clone()),
                     )
                     .child(
                         div()
@@ -1085,6 +1146,24 @@ impl Workspace {
                             this.show_tab_menu(id, event.position, window, cx)
                         }),
                     )
+                    .on_drag(
+                        DraggedTab {
+                            id,
+                            title: title.clone(),
+                            icon: icon.clone(),
+                        },
+                        |tab, _, _, cx| cx.new(|_| tab.clone()),
+                    )
+                    .drag_over::<DraggedTab>(move |style, dragged, _, _| {
+                        if dragged.id == id {
+                            style
+                        } else {
+                            style.bg(drop_highlight)
+                        }
+                    })
+                    .on_drop(cx.listener(move |this, dragged: &DraggedTab, _, cx| {
+                        this.move_tab(dragged.id, Some(id), cx)
+                    }))
                     .into_any_element()
             })
             .collect();
@@ -1127,13 +1206,15 @@ impl Workspace {
                                 }
                             }))
                             .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                                // Double-clicking after the last tab adds a new
+                                // file there.
                                 if event.click_count() == 2 {
-                                    if cfg!(target_os = "macos") {
-                                        window.titlebar_double_click();
-                                    } else {
-                                        this.open_text("", window, cx);
-                                    }
+                                    let id = this.open_text("", window, cx);
+                                    this.move_tab(id, None, cx);
                                 }
+                            }))
+                            .on_drop(cx.listener(|this, dragged: &DraggedTab, _, cx| {
+                                this.move_tab(dragged.id, None, cx)
                             })),
                     ),
             )
@@ -1167,48 +1248,74 @@ impl Workspace {
             })
     }
 
-    fn render_status_bar(&self, cx: &App) -> impl IntoElement {
-        let palette = theme::palette(cx);
-        let mut left: Vec<SharedString> = Vec::new();
-        let mut right: Vec<SharedString> = Vec::new();
+    fn render_status_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = theme::palette(cx).clone();
+        let mut left: Vec<AnyElement> = Vec::new();
+        let mut right: Vec<AnyElement> = Vec::new();
+        let label = |text: SharedString| div().child(text).into_any_element();
         if let Some(tab) = self.active_tab() {
             let editor = tab.editor.read(cx);
             if tab.show_preview && tab.preview.is_some() {
-                left.push(
+                left.push(label(
                     if cfg!(target_os = "macos") {
                         "Markdown preview · ⇧⌘V for source"
                     } else {
                         "Markdown preview · Ctrl+Shift+V for source"
                     }
                     .into(),
-                );
+                ));
             } else {
                 let sels = editor.state.selections();
                 let primary = sels.primary();
                 let (line, col) = editor.state.doc.line_col(primary.head);
-                left.push(format!("Ln {}, Col {}", line + 1, col + 1).into());
+                left.push(status_item(
+                    "status-position",
+                    format!("Ln {}, Col {}", line + 1, col + 1).into(),
+                    &palette,
+                    cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                        this.show_go_to_line(window, cx)
+                    }),
+                ));
                 if sels.len() > 1 {
-                    left.push(format!("{} selections", sels.len()).into());
+                    left.push(label(format!("{} selections", sels.len()).into()));
                 } else if !primary.is_empty() {
-                    left.push(format!("{} selected", primary.end() - primary.start()).into());
+                    left.push(label(
+                        format!("{} selected", primary.end() - primary.start()).into(),
+                    ));
                 }
             }
             if let Some(notice) = &editor.notice {
-                left.push(notice.clone());
+                left.push(label(notice.clone()));
             }
-            right.push(editor.language_name().unwrap_or("Plain Text").into());
-            right.push(
+            let language = editor.language_name();
+            right.push(status_item(
+                "status-language",
+                language.unwrap_or("Plain Text").into(),
+                &palette,
+                cx.listener(move |_, event: &MouseDownEvent, window, cx| {
+                    language_menu(language).show(event.position, window, cx)
+                }),
+            ));
+            right.push(label(
                 match editor.state.doc.line_ending() {
                     me_text::LineEnding::Lf => "LF",
                     me_text::LineEnding::CrLf => "CRLF",
                 }
                 .into(),
-            );
-            right.push(if editor.state.hard_tabs {
-                "Tabs".into()
-            } else {
-                format!("Spaces: {}", editor.state.tab_width).into()
-            });
+            ));
+            let (hard_tabs, width) = (editor.state.hard_tabs, editor.state.tab_width);
+            right.push(status_item(
+                "status-indent",
+                if hard_tabs {
+                    format!("Tab Size: {width}").into()
+                } else {
+                    format!("Spaces: {width}").into()
+                },
+                &palette,
+                cx.listener(move |_, event: &MouseDownEvent, window, cx| {
+                    indentation_menu(hard_tabs, width).show(event.position, window, cx)
+                }),
+            ));
         }
         div()
             .h(px(STATUS_BAR_HEIGHT))
@@ -1216,14 +1323,14 @@ impl Workspace {
             .flex()
             .items_center()
             .justify_between()
-            .px(px(12.))
+            .px(px(8.))
             .border_t_1()
             .border_color(palette.border)
             .bg(palette.tab_bar_bg)
             .text_size(px(12.5))
             .text_color(palette.text_secondary)
-            .child(div().flex().gap(px(14.)).children(left))
-            .child(div().flex().gap(px(14.)).children(right))
+            .child(div().flex().items_center().gap(px(8.)).children(left))
+            .child(div().flex().items_center().gap(px(8.)).children(right))
     }
 
     fn render_empty(&self, cx: &App) -> impl IntoElement {
@@ -1296,6 +1403,78 @@ impl Workspace {
                     )),
             )
     }
+}
+
+/// A clickable status bar entry. It reacts on mouse down, so a menu opens
+/// where the pointer is, like native status bar items.
+fn status_item(
+    id: &'static str,
+    text: SharedString,
+    palette: &theme::Palette,
+    on_press: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    div()
+        .id(id)
+        .h(px(20.))
+        .px(px(6.))
+        .flex()
+        .items_center()
+        .rounded(px(4.))
+        .hover(|s| s.bg(palette.hover).text_color(palette.text))
+        .child(text)
+        .on_mouse_down(MouseButton::Left, on_press)
+        .into_any_element()
+}
+
+fn language_menu(current: Option<&'static str>) -> gpui_component::native_menu::NativeMenu {
+    let mut menu = gpui_component::native_menu::NativeMenu::new().menu_with_check(
+        "Plain Text",
+        current.is_none(),
+        Box::new(SetLanguage { name: None }),
+    );
+    menu = menu.separator();
+    for language in me_syntax::LANGUAGES {
+        menu = menu.menu_with_check(
+            language.name,
+            current == Some(language.name),
+            Box::new(SetLanguage {
+                name: Some(language.name.into()),
+            }),
+        );
+    }
+    menu
+}
+
+fn indentation_menu(hard_tabs: bool, width: usize) -> gpui_component::native_menu::NativeMenu {
+    let mut menu = gpui_component::native_menu::NativeMenu::new()
+        .menu_with_check(
+            "Indent Using Spaces",
+            !hard_tabs,
+            Box::new(SetIndentation {
+                hard_tabs: false,
+                width,
+            }),
+        )
+        .menu_with_check(
+            "Indent Using Tabs",
+            hard_tabs,
+            Box::new(SetIndentation {
+                hard_tabs: true,
+                width,
+            }),
+        )
+        .separator();
+    for w in [2, 3, 4, 8] {
+        menu = menu.menu_with_check(
+            format!("Width: {w}"),
+            w == width,
+            Box::new(SetIndentation {
+                hard_tabs,
+                width: w,
+            }),
+        );
+    }
+    menu
 }
 
 fn sidebar_button(

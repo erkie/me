@@ -49,6 +49,7 @@ impl IconColor {
     }
 }
 
+#[derive(Clone)]
 pub struct FileIcon {
     /// Asset path for `svg().path(...)`.
     pub path: SharedString,
