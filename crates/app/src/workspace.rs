@@ -249,6 +249,9 @@ impl Workspace {
                 },
             ),
         ];
+        if let Some(updater) = crate::updater::entity(cx) {
+            subscriptions.push(cx.observe(&updater, |_, _, cx| cx.notify()));
+        }
         subscriptions.push(cx.observe_window_appearance(window, |_, window, cx| {
             theme::apply(window.appearance(), cx);
         }));
@@ -2640,6 +2643,24 @@ impl Workspace {
         let mut left: Vec<AnyElement> = Vec::new();
         let mut right: Vec<AnyElement> = Vec::new();
         let label = |text: SharedString| div().child(text).into_any_element();
+        if let Some(build) = crate::updater::ready_build(cx) {
+            right.push(
+                div()
+                    .id("status-update")
+                    .h(px(20.))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .rounded(px(4.))
+                    .text_color(palette.accent)
+                    .hover(|s| s.bg(palette.hover))
+                    .child(SharedString::from(format!(
+                        "Restart to Update (build {build})"
+                    )))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| crate::updater::restart(cx))
+                    .into_any_element(),
+            );
+        }
         if let Some(tab) = self.active_tab() {
             let editor = tab.editor.read(cx);
             let source_key = if cfg!(target_os = "macos") {

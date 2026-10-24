@@ -165,6 +165,8 @@ actions!(
         DecreaseFontSize,
         ResetFontSize,
         ToggleWordWrap,
+        CheckForUpdates,
+        RestartToUpdate,
     ]
 );
 

@@ -45,7 +45,7 @@ pub fn init(cx: &mut App) {
                 .update(cx, |_, window, cx| {
                     let _ = window.prompt(
                         PromptLevel::Info,
-                        &format!("Me {}", env!("CARGO_PKG_VERSION")),
+                        &format!("Me {}", crate::updater::version_label()),
                         Some("A fast, native editor for reading markdown and code."),
                         &["OK"],
                         cx,
@@ -93,6 +93,7 @@ fn set_menus(cx: &mut App) {
     cx.set_menus([
         Menu::new("Me").items([
             MenuItem::action("About Me", About),
+            MenuItem::action("Check for Updates…", CheckForUpdates),
             MenuItem::separator(),
             MenuItem::action("Install 'me' Command…", InstallCli),
             MenuItem::action("Make Me the Default Editor…", MakeDefaultEditor),

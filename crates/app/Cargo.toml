@@ -4,6 +4,7 @@ description = "Me's GUI: GPUI windows, file tree, tabs, editor, markdown preview
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+repository.workspace = true
 publish = false
 default-run = "me-app"
 
@@ -46,6 +47,7 @@ merman.workspace = true
 anyhow.workspace = true
 parking_lot.workspace = true
 tempfile.workspace = true
+sha2 = "0.10"
 futures = "0.3"
 serde.workspace = true
 serde_json.workspace = true

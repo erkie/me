@@ -24,6 +24,7 @@ mod session;
 mod settings;
 mod symbols;
 mod theme;
+mod updater;
 mod workspace;
 
 use std::path::PathBuf;
@@ -135,6 +136,7 @@ fn main() {
         file_tree::bind_keys(cx);
         app_state::init(cx);
         menus::init(cx);
+        updater::init(cx);
 
         #[cfg(unix)]
         if let Some(server) = server {

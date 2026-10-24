@@ -80,6 +80,8 @@ fn commands(cx: &App) -> Vec<(String, Box<dyn Action>)> {
             Box::new(RestartLanguageServer),
         ),
         ("Language Server: Stop".into(), Box::new(StopLanguageServer)),
+        ("Check for Updates".into(), Box::new(CheckForUpdates)),
+        ("Restart to Update".into(), Box::new(RestartToUpdate)),
         ("Find…".into(), Box::new(Find)),
         ("Find in Project…".into(), Box::new(ToggleProjectSearch)),
         (word_wrap.into(), Box::new(ToggleWordWrap)),

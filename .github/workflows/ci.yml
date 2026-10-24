@@ -7,7 +7,9 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Every push to master gets its release; elsewhere only the newest run
+  # matters.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -45,3 +47,65 @@ jobs:
         with:
           name: Me-macos
           path: dist/Me-macos.zip
+
+  # Every push to master that passes the tests becomes a build: a universal
+  # Me.app uploaded as an artifact and published as the GitHub release
+  # build-<n> (n = commit count), which the app updates itself from.
+  release:
+    name: Release (Me.app, universal)
+    needs: [linux, macos]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: macos-15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The whole history: the build number is the commit count, and the
+          # notes list the commits since the last build's tag.
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - run: script/bundle-macos --universal
+      - name: Package
+        id: package
+        run: |
+          build=$(git rev-list --count HEAD)
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          ditto -c -k --keepParent dist/Me.app dist/Me-macos.zip
+          shasum -a 256 dist/Me-macos.zip | cut -d' ' -f1 > dist/Me-macos.zip.sha256
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Me-macos-build-${{ steps.package.outputs.build }}
+          path: |
+            dist/Me-macos.zip
+            dist/Me-macos.zip.sha256
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD: ${{ steps.package.outputs.build }}
+          VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          previous=$(git describe --tags --match 'build-*' --abbrev=0 HEAD^ 2>/dev/null || true)
+          {
+            echo "Me $VERSION, build $BUILD ($(git rev-parse --short HEAD))"
+            echo
+            if [ -n "$previous" ]; then
+              git log --no-merges --format='- %s' "$previous..HEAD"
+            else
+              git log --no-merges --format='- %s' -20
+            fi
+          } > notes.md
+          # A re-run replaces its own release.
+          gh release delete "build-$BUILD" --cleanup-tag --yes 2>/dev/null || true
+          gh release create "build-$BUILD" dist/Me-macos.zip dist/Me-macos.zip.sha256 \
+            --target "$GITHUB_SHA" --title "Me $VERSION (build $BUILD)" \
+            --notes-file notes.md --latest
+          # Keep the newest 20 builds.
+          gh release list --limit 200 --json tagName,createdAt \
+            --jq 'sort_by(.createdAt) | reverse | .[20:] | .[].tagName' |
+            while read -r tag; do gh release delete "$tag" --cleanup-tag --yes; done

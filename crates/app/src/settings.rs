@@ -23,6 +23,12 @@ pub struct Settings {
     /// `{"rust": {"enabled": false}}`.
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub language_servers: HashMap<String, LanguageServerSettings>,
+    /// Download new builds from GitHub and install them on restart.
+    pub auto_update: bool,
+    /// A token that can read the repository's releases (it's private). By
+    /// default `GH_TOKEN`/`GITHUB_TOKEN` or the GitHub CLI's is used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub github_token: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -46,6 +52,8 @@ impl Default for Settings {
             font_size: DEFAULT_FONT_SIZE,
             word_wrap: false,
             language_servers: HashMap::new(),
+            auto_update: true,
+            github_token: None,
         }
     }
 }

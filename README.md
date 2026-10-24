@@ -55,6 +55,11 @@ code. The plan and the reasoning behind the technology choice are in
 
 ## Install (macOS)
 
+Download `Me-macos.zip` from the [latest release](https://github.com/erkie/me/releases/latest),
+unzip it and move Me.app to /Applications. It isn't notarized, so open it
+the first time with right-click → Open. From then on it updates itself (see
+[Updates](#updates)). Or build it yourself:
+
 ```sh
 script/bundle-macos --install      # builds dist/Me.app, copies it to /Applications, links `me`
 ```
@@ -67,6 +72,25 @@ To use it for git commit messages and other `$EDITOR` prompts:
 ```sh
 export EDITOR="me -w"
 ```
+
+## Updates
+
+Every push to master that passes CI becomes a build: the `release` job
+builds a universal Me.app (Apple silicon and Intel), uploads it as an
+artifact, and publishes it as the GitHub release `build-<n>`, where n is
+master's commit count, with the commits since the last build as notes.
+
+Me checks for a newer build half a minute after launch and every six
+hours, downloads it in the background and checks it (size, SHA-256, bundle
+id, build number, code signature). It's installed when you quit, or right
+away with **Restart to Update** in the status bar. **Me → Check for
+Updates…** checks now; **About Me** shows the build you have.
+
+The repository is private, so Me needs a token that can read it: the GitHub
+CLI's if you're signed in (`gh auth login`), else `GH_TOKEN` or
+`GITHUB_TOKEN`, else `"github_token"` in `settings.json`. Set
+`"auto_update": false` there to turn updates off. Development builds
+(`cargo run`) never update.
 
 ## Usage
 

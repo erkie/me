@@ -20,7 +20,12 @@ for arg in "$@"; do
 done
 
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+# The build number is master's commit count: CI's releases are tagged
+# build-<n>, and the app compares its own number to the latest one to
+# update itself.
 build=$(git rev-list --count HEAD 2>/dev/null || echo 1)
+commit=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
+export ME_BUILD=$build ME_COMMIT=$commit
 
 if $universal; then
   rustup target add aarch64-apple-darwin x86_64-apple-darwin >/dev/null
