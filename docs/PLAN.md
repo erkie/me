@@ -371,12 +371,16 @@ Use the standard language servers (rust-analyzer, gopls,
 typescript-language-server, pyright, clangd, …); analysing languages is
 their whole job, and they are what VS Code and Zed run too. Two tiers:
 
-1. **Built in, instant, nothing to install.** The tree-sitter grammars we
-   ship have `tags` queries; a background pass over the project builds a
-   symbol index (name → definitions). Cmd+click jumps to the definition when
-   the name is unambiguous and offers a short picker when it isn't;
-   `Cmd+R` lists the file's symbols and `Cmd+Shift+R` the project's. Every
-   language we highlight, a few MB of memory, not type-aware.
+1. **Built in, instant, nothing to install** (done). The tree-sitter
+   grammars we ship have `tags` queries (plus our own for Bash, Markdown
+   headings and Rust constants and impls); a background pass over the
+   folder builds a symbol index (name → definitions), refreshed for changed
+   files when the window regains focus and per file on save. Cmd+click and
+   F12 jump to the definition, nearest first (same file, same folder),
+   with a picker when several match; `Cmd+R` lists the file's symbols and
+   `Cmd+Shift+R` the project's; the path bar shows the symbols around the
+   cursor; Ctrl+- goes back. Shift+F12 searches the project for the word.
+   Every language we highlight, a few MB of memory, not type-aware.
 2. **LSP, when a server is installed.** A `me-lsp` crate speaks JSON-RPC
    over stdio (`lsp-types`). A server starts the first time a file of its
    language opens in a folder (found on `PATH`, configured in

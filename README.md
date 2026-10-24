@@ -33,7 +33,11 @@ code. The plan and the reasoning behind the technology choice are in
 - `⌘T` fuzzy file finder (nucleo, with background indexing)
 - `⇧⌘F` project search and replace (ripgrep's engine, streaming results)
 - `⌘F` find and replace in a file, with regex, case, and whole-word options
-- Multiple selections: `⌘D`, `⌘L`, `⇧⌘L`, `⌃⌘G`, `⌃⇧↑/↓`, `⌘`-click,
+- **Go to definition** with `⌘`-click or `F12`, in every language we
+  highlight and with nothing to install (a tree-sitter symbol index of the
+  folder); `⌘R` jumps to a symbol in the file, `⇧⌘R` in the project, and
+  `⌃-` / `⌃⇧-` go back and forward
+- Multiple selections: `⌘D`, `⌘L`, `⇧⌘L`, `⌃⌘G`, `⌃⇧↑/↓`, `⌥`-click,
   and **`⌥`-drag column selection**
 - Never loses work: closing a window or quitting keeps unsaved text, tabs
   and cursors, and brings them back (per folder)

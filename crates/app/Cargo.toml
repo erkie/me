@@ -50,6 +50,7 @@ serde.workspace = true
 serde_json.workspace = true
 dirs.workspace = true
 nucleo.workspace = true
+ignore.workspace = true
 trash = "5"
 image = { version = "0.25", default-features = false }
 

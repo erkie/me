@@ -35,6 +35,8 @@ pub enum EditorEvent {
     DirtyChanged,
     Saved,
     Loaded,
+    /// Cmd+click (Ctrl+click elsewhere) on the char at this offset.
+    GoToDefinition(usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,9 +67,11 @@ enum Drag {
         others: Vec<Selection>,
     },
     /// Option-drag column selection from a (line, visual column) corner.
+    /// Until the pointer moves it is an Option-click, which added a cursor.
     Column {
         anchor: (usize, usize),
         others: Vec<Selection>,
+        moved: bool,
     },
 }
 
@@ -123,6 +127,12 @@ pub struct EditorView {
     placeholder: bool,
     /// Session state to apply once a background load finishes.
     pending_restore: Option<Restore>,
+    /// Bumped whenever a new syntax tree arrives.
+    tree_generation: u64,
+    /// The file's symbols for (revision, tree generation).
+    symbols_cache: Option<(u64, Arc<Vec<me_syntax::Symbol>>)>,
+    /// The word under the pointer while Cmd is held, drawn as a link.
+    pub(crate) hover_link: Option<Range<usize>>,
     _subscriptions: Vec<gpui::Subscription>,
 }
 
@@ -173,6 +183,9 @@ impl EditorView {
             disk_mtime: None,
             placeholder: false,
             pending_restore: None,
+            tree_generation: 0,
+            symbols_cache: None,
+            hover_link: None,
             _subscriptions: subscriptions,
         }
     }
@@ -244,6 +257,52 @@ impl EditorView {
         cx.notify();
     }
 
+    /// The file's definitions (from the last parse), cached until the text
+    /// or the tree changes.
+    pub fn symbols(&mut self) -> Arc<Vec<me_syntax::Symbol>> {
+        // Recomputed after each parse, not each keystroke: between an edit
+        // and its reparse, positions after the edit may lag behind.
+        if let Some((generation, symbols)) = &self.symbols_cache
+            && *generation == self.tree_generation
+        {
+            return symbols.clone();
+        }
+        let symbols = Arc::new(
+            self.syntax
+                .as_ref()
+                .map(|s| s.symbols(self.state.doc.rope()))
+                .unwrap_or_default(),
+        );
+        self.symbols_cache = Some((self.tree_generation, symbols.clone()));
+        symbols
+    }
+
+    /// The identifier at char offset `pos`, if any.
+    pub fn identifier_at(&self, pos: usize) -> Option<(Range<usize>, String)> {
+        let range = self.state.word_range_at(pos);
+        let word = self.state.doc.text(range.clone());
+        let is_identifier = word
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_alphabetic() || c == '_')
+            && word.chars().all(|c| c.is_alphanumeric() || c == '_');
+        is_identifier.then_some((range, word))
+    }
+
+    /// The identifier under a window point, for Cmd-hover links.
+    pub(crate) fn link_at(&self, position: Point<Pixels>) -> Option<Range<usize>> {
+        let hit = self.layout.as_ref()?.hit(position, &self.state);
+        self.identifier_at(hit.pos).map(|(range, _)| range)
+    }
+
+    /// Shows the word under the pointer as a link while Cmd is held.
+    pub(crate) fn set_hover_link(&mut self, link: Option<Range<usize>>, cx: &mut Context<Self>) {
+        if self.hover_link != link {
+            self.hover_link = link;
+            cx.notify();
+        }
+    }
+
     /// What a session needs to bring this editor back.
     pub fn view_state(&self) -> (usize, f64) {
         (self.state.selections().primary().head, self.scroll.y)
@@ -278,6 +337,7 @@ impl EditorView {
                 self.schedule_parse(cx);
             }
         }
+        self.tree_generation += 1;
         if let Some(restore) = self.pending_restore.take() {
             self.restore(restore, cx);
         }
@@ -338,6 +398,7 @@ impl EditorView {
     /// Highlights the file as `language`, or as plain text.
     pub fn set_language(&mut self, language: Option<&'static LanguageDef>, cx: &mut Context<Self>) {
         self.syntax = language.and_then(|def| def.load()).map(Syntax::new);
+        self.tree_generation += 1;
         self.schedule_parse(cx);
         cx.notify();
     }
@@ -469,6 +530,7 @@ impl EditorView {
                     && let (Some(tree), Some(syntax)) = (tree, &mut this.syntax)
                 {
                     syntax.set_tree(tree);
+                    this.tree_generation += 1;
                     cx.notify();
                 }
             })
@@ -695,27 +757,25 @@ impl EditorView {
         window.focus(&self.focus_handle, cx);
         let Some(layout) = &self.layout else { return };
         let hit = layout.hit(position, &self.state);
-        // Option-drag selects a column; Cmd-click (Ctrl-click elsewhere) adds
-        // a cursor, and combined with Option adds a column.
-        let add = modifiers.secondary();
+        // Option-click adds (or removes) a cursor and Option-drag selects a
+        // column, as in VS Code; with Cmd too, the column adds to the
+        // existing selections. Cmd-click goes to the definition.
         if modifiers.alt {
-            let others = if add {
-                self.state.selections().iter().copied().collect()
-            } else {
-                Vec::new()
-            };
+            let keep = modifiers.secondary();
             self.drag = Some(Drag::Column {
                 anchor: (hit.line, hit.visual_col),
-                others: others.clone(),
+                others: if keep {
+                    self.state.selections().iter().copied().collect()
+                } else {
+                    Vec::new()
+                },
+                moved: false,
             });
-            self.apply_column(
-                others,
-                (hit.line, hit.visual_col),
-                (hit.line, hit.visual_col),
-            );
+            self.state.toggle_cursor(hit.pos);
             self.did_move(cx);
             return;
         }
+        let go_to_definition = modifiers.secondary() && !modifiers.shift && click_count == 1;
 
         let granularity = match click_count {
             2 => Granularity::Word,
@@ -743,28 +803,7 @@ impl EditorView {
             return;
         }
 
-        let others = if add {
-            if click_count == 1 {
-                self.state.toggle_cursor(hit.pos);
-                self.did_move(cx);
-                let others = self
-                    .state
-                    .selections()
-                    .iter()
-                    .copied()
-                    .filter(|s| s.head != hit.pos)
-                    .collect();
-                self.drag = Some(Drag::Select {
-                    origin,
-                    granularity,
-                    others,
-                });
-                return;
-            }
-            self.state.selections().iter().copied().collect()
-        } else {
-            Vec::new()
-        };
+        let others = Vec::new();
         self.drag = Some(Drag::Select {
             origin: origin.clone(),
             granularity,
@@ -772,6 +811,9 @@ impl EditorView {
         });
         self.apply_drag_select(others, origin.clone(), origin, granularity);
         self.did_move(cx);
+        if go_to_definition {
+            cx.emit(EditorEvent::GoToDefinition(hit.pos));
+        }
     }
 
     pub(crate) fn mouse_drag(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
@@ -792,8 +834,23 @@ impl EditorView {
                 };
                 self.apply_drag_select(others, origin, target, granularity);
             }
-            Drag::Column { anchor, others } => {
-                self.apply_column(others, anchor, (hit.line, hit.visual_col));
+            Drag::Column {
+                anchor,
+                others,
+                moved,
+            } => {
+                let head = (hit.line, hit.visual_col);
+                if !moved && head == anchor {
+                    return;
+                }
+                if !moved {
+                    self.drag = Some(Drag::Column {
+                        anchor,
+                        others: others.clone(),
+                        moved: true,
+                    });
+                }
+                self.apply_column(others, anchor, head);
             }
         }
         self.did_move(cx);
@@ -869,7 +926,17 @@ impl EditorView {
                 self.did_move(cx);
             }
         }
-        let mut menu = gpui_component::native_menu::NativeMenu::new()
+        let mut menu = gpui_component::native_menu::NativeMenu::new();
+        let on_identifier = self
+            .identifier_at(self.state.selections().primary().head)
+            .is_some();
+        if on_identifier && self.syntax.is_some() {
+            menu = menu
+                .menu("Go to Definition", Box::new(GoToDefinition))
+                .menu("Find References", Box::new(FindReferences))
+                .separator();
+        }
+        let mut menu = menu
             .menu_with_disabled("Cut", self.read_only, Box::new(Cut))
             .menu("Copy", Box::new(Copy))
             .menu_with_disabled("Paste", self.read_only, Box::new(Paste))

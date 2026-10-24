@@ -99,6 +99,12 @@ actions!(
         ToggleCommandPalette,
         CloseOtherTabs,
         CloseTabsToTheRight,
+        GoToDefinition,
+        FindReferences,
+        GoToSymbol,
+        GoToProjectSymbol,
+        NavigateBack,
+        NavigateForward,
     ]
 );
 
@@ -264,6 +270,21 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-shift-p", ToggleCommandPalette, workspace),
         KeyBinding::new("secondary-k", ToggleCommandPalette, workspace),
         KeyBinding::new("alt-z", ToggleWordWrap, workspace),
+        KeyBinding::new("f12", GoToDefinition, workspace),
+        KeyBinding::new("shift-f12", FindReferences, workspace),
+        KeyBinding::new("secondary-r", GoToSymbol, workspace),
+        KeyBinding::new("secondary-shift-r", GoToProjectSymbol, workspace),
+        KeyBinding::new("ctrl-shift--", NavigateForward, workspace),
+        // Ctrl+- is font size off the Mac.
+        KeyBinding::new(
+            if cfg!(target_os = "macos") {
+                "ctrl--"
+            } else {
+                "ctrl-alt--"
+            },
+            NavigateBack,
+            workspace,
+        ),
         // App
         KeyBinding::new("secondary-o", Open, None),
         KeyBinding::new("secondary-shift-o", OpenFolder, None),

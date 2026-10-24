@@ -140,6 +140,16 @@ impl SearchPanel {
             .update(cx, |input, cx| input.focus(window, cx));
     }
 
+    /// Searches for whole-word, case-sensitive occurrences of `word` (find
+    /// references without a language server).
+    pub fn show_word(&mut self, word: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.regex = false;
+        self.case_sensitive = true;
+        self.whole_word = true;
+        self.show(Some(word), window, cx);
+        cx.notify();
+    }
+
     fn query(&self, cx: &App) -> Option<SearchQuery> {
         let pattern = self.query_input.read(cx).value().to_string();
         if pattern.is_empty() {

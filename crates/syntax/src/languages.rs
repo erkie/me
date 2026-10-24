@@ -1,6 +1,6 @@
 //! The built-in language table.
 
-use crate::LanguageDef;
+use crate::{LanguageDef, tags};
 
 macro_rules! grammar {
     ($krate:ident) => {
@@ -19,6 +19,7 @@ pub static LANGUAGES: &[LanguageDef] = &[
         line_comment: Some("//"),
         grammar: grammar!(tree_sitter_rust),
         highlights: &[tree_sitter_rust::HIGHLIGHTS_QUERY],
+        tags: &[tree_sitter_rust::TAGS_QUERY, tags::RUST_EXTRA],
     },
     LanguageDef {
         name: "JavaScript",
@@ -30,6 +31,7 @@ pub static LANGUAGES: &[LanguageDef] = &[
             tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,
             tree_sitter_javascript::HIGHLIGHT_QUERY,
         ],
+        tags: &[tree_sitter_javascript::TAGS_QUERY],
     },
     LanguageDef {
         name: "TypeScript",
@@ -40,6 +42,10 @@ pub static LANGUAGES: &[LanguageDef] = &[
         highlights: &[
             tree_sitter_typescript::HIGHLIGHTS_QUERY,
             tree_sitter_javascript::HIGHLIGHT_QUERY,
+        ],
+        tags: &[
+            tree_sitter_typescript::TAGS_QUERY,
+            tree_sitter_javascript::TAGS_QUERY,
         ],
     },
     LanguageDef {
@@ -53,6 +59,10 @@ pub static LANGUAGES: &[LanguageDef] = &[
             tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,
             tree_sitter_javascript::HIGHLIGHT_QUERY,
         ],
+        tags: &[
+            tree_sitter_typescript::TAGS_QUERY,
+            tree_sitter_javascript::TAGS_QUERY,
+        ],
     },
     LanguageDef {
         name: "Python",
@@ -61,6 +71,7 @@ pub static LANGUAGES: &[LanguageDef] = &[
         line_comment: Some("#"),
         grammar: grammar!(tree_sitter_python),
         highlights: &[tree_sitter_python::HIGHLIGHTS_QUERY],
+        tags: &[tree_sitter_python::TAGS_QUERY],
     },
     LanguageDef {
         name: "Go",
@@ -69,6 +80,7 @@ pub static LANGUAGES: &[LanguageDef] = &[
         line_comment: Some("//"),
         grammar: grammar!(tree_sitter_go),
         highlights: &[tree_sitter_go::HIGHLIGHTS_QUERY],
+        tags: &[tree_sitter_go::TAGS_QUERY],
     },
     LanguageDef {
         name: "JSON",
@@ -77,6 +89,7 @@ pub static LANGUAGES: &[LanguageDef] = &[
         line_comment: None,
         grammar: grammar!(tree_sitter_json),
         highlights: &[tree_sitter_json::HIGHLIGHTS_QUERY],
+        tags: &[],
     },
     LanguageDef {
         name: "TOML",
@@ -85,6 +98,7 @@ pub static LANGUAGES: &[LanguageDef] = &[
         line_comment: Some("#"),
         grammar: grammar!(tree_sitter_toml_ng),
         highlights: &[tree_sitter_toml_ng::HIGHLIGHTS_QUERY],
+        tags: &[],
     },
     LanguageDef {
         name: "YAML",
@@ -93,6 +107,7 @@ pub static LANGUAGES: &[LanguageDef] = &[
         line_comment: Some("#"),
         grammar: grammar!(tree_sitter_yaml),
         highlights: &[tree_sitter_yaml::HIGHLIGHTS_QUERY],
+        tags: &[],
     },
     LanguageDef {
         name: "Shell",
@@ -108,6 +123,7 @@ pub static LANGUAGES: &[LanguageDef] = &[
         line_comment: Some("#"),
         grammar: grammar!(tree_sitter_bash),
         highlights: &[tree_sitter_bash::HIGHLIGHT_QUERY],
+        tags: &[tags::BASH],
     },
     LanguageDef {
         name: "C",
@@ -116,6 +132,7 @@ pub static LANGUAGES: &[LanguageDef] = &[
         line_comment: Some("//"),
         grammar: grammar!(tree_sitter_c),
         highlights: &[tree_sitter_c::HIGHLIGHT_QUERY],
+        tags: &[tree_sitter_c::TAGS_QUERY],
     },
     LanguageDef {
         name: "C++",
@@ -127,6 +144,7 @@ pub static LANGUAGES: &[LanguageDef] = &[
             tree_sitter_cpp::HIGHLIGHT_QUERY,
             tree_sitter_c::HIGHLIGHT_QUERY,
         ],
+        tags: &[tree_sitter_cpp::TAGS_QUERY],
     },
     LanguageDef {
         name: "CSS",
@@ -135,6 +153,7 @@ pub static LANGUAGES: &[LanguageDef] = &[
         line_comment: None,
         grammar: grammar!(tree_sitter_css),
         highlights: &[tree_sitter_css::HIGHLIGHTS_QUERY],
+        tags: &[],
     },
     LanguageDef {
         name: "HTML",
@@ -143,6 +162,7 @@ pub static LANGUAGES: &[LanguageDef] = &[
         line_comment: None,
         grammar: grammar!(tree_sitter_html),
         highlights: &[tree_sitter_html::HIGHLIGHTS_QUERY],
+        tags: &[],
     },
     LanguageDef {
         name: "Java",
@@ -151,6 +171,7 @@ pub static LANGUAGES: &[LanguageDef] = &[
         line_comment: Some("//"),
         grammar: grammar!(tree_sitter_java),
         highlights: &[tree_sitter_java::HIGHLIGHTS_QUERY],
+        tags: &[tree_sitter_java::TAGS_QUERY],
     },
     LanguageDef {
         name: "Ruby",
@@ -159,6 +180,7 @@ pub static LANGUAGES: &[LanguageDef] = &[
         line_comment: Some("#"),
         grammar: grammar!(tree_sitter_ruby),
         highlights: &[tree_sitter_ruby::HIGHLIGHTS_QUERY],
+        tags: &[tree_sitter_ruby::TAGS_QUERY],
     },
     LanguageDef {
         name: "Swift",
@@ -167,6 +189,7 @@ pub static LANGUAGES: &[LanguageDef] = &[
         line_comment: Some("//"),
         grammar: grammar!(tree_sitter_swift),
         highlights: &[tree_sitter_swift::HIGHLIGHTS_QUERY],
+        tags: &[tree_sitter_swift::TAGS_QUERY],
     },
     LanguageDef {
         name: "Lua",
@@ -175,6 +198,7 @@ pub static LANGUAGES: &[LanguageDef] = &[
         line_comment: Some("--"),
         grammar: grammar!(tree_sitter_lua),
         highlights: &[tree_sitter_lua::HIGHLIGHTS_QUERY],
+        tags: &[tree_sitter_lua::TAGS_QUERY],
     },
     LanguageDef {
         name: "Make",
@@ -183,6 +207,7 @@ pub static LANGUAGES: &[LanguageDef] = &[
         line_comment: Some("#"),
         grammar: grammar!(tree_sitter_make),
         highlights: &[tree_sitter_make::HIGHLIGHTS_QUERY],
+        tags: &[],
     },
     LanguageDef {
         name: "Diff",
@@ -191,6 +216,7 @@ pub static LANGUAGES: &[LanguageDef] = &[
         line_comment: None,
         grammar: grammar!(tree_sitter_diff),
         highlights: &[tree_sitter_diff::HIGHLIGHTS_QUERY],
+        tags: &[],
     },
     LanguageDef {
         name: "Markdown",
@@ -199,5 +225,6 @@ pub static LANGUAGES: &[LanguageDef] = &[
         line_comment: None,
         grammar: grammar!(tree_sitter_md),
         highlights: &[tree_sitter_md::HIGHLIGHT_QUERY_BLOCK],
+        tags: &[tags::MARKDOWN],
     },
 ];

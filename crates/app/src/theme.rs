@@ -174,6 +174,21 @@ impl Palette {
     }
 
     /// Error text.
+    /// The color of a symbol kind's badge (pickers, path bar).
+    pub fn symbol(&self, kind: me_syntax::SymbolKind) -> Hsla {
+        use me_syntax::SymbolKind::*;
+        let c = &self.syntax;
+        match kind {
+            Function | Method => c.function,
+            Class | Interface | Type | Impl => c.ty,
+            Constant => c.constant,
+            Module => c.keyword,
+            Macro => c.attribute,
+            Heading => c.title,
+            Other => self.text_secondary,
+        }
+    }
+
     pub fn danger(&self) -> Hsla {
         self.syntax.removed
     }

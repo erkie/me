@@ -174,6 +174,18 @@ fn set_menus(cx: &mut App) {
             MenuItem::action("Smaller Text", DecreaseFontSize),
             MenuItem::action("Default Text Size", ResetFontSize),
         ]),
+        Menu::new("Go").items([
+            MenuItem::action("Back", NavigateBack),
+            MenuItem::action("Forward", NavigateForward),
+            MenuItem::separator(),
+            MenuItem::action("Go to File…", ToggleFileFinder),
+            MenuItem::action("Go to Symbol in File…", GoToSymbol),
+            MenuItem::action("Go to Symbol in Project…", GoToProjectSymbol),
+            MenuItem::action("Go to Line…", GoToLine),
+            MenuItem::separator(),
+            MenuItem::action("Go to Definition", GoToDefinition),
+            MenuItem::action("Find References", FindReferences),
+        ]),
         Menu::new("Window").items([
             MenuItem::action("Minimize", Minimize),
             MenuItem::action("Zoom", Zoom),

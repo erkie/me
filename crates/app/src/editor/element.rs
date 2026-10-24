@@ -360,6 +360,9 @@ pub struct PrepaintState {
     lines: Vec<(Point<Pixels>, ShapedLine)>,
     gutter: Vec<(Point<Pixels>, ShapedLine)>,
     cursors: Vec<PaintQuad>,
+    /// Underline of the Cmd-hovered word.
+    link: Vec<PaintQuad>,
+    link_hovered: bool,
     scrollbar: Option<PaintQuad>,
     notice: Option<(Point<Pixels>, ShapedLine)>,
     line_height: Pixels,
@@ -685,6 +688,28 @@ impl Element for EditorElement {
             );
         }
 
+        // The Cmd-hovered word, underlined like a link.
+        let mut link = Vec::new();
+        if let Some(range) = view.hover_link.clone() {
+            push_range_quads(
+                &mut link,
+                doc,
+                range,
+                &rows,
+                &to_window,
+                line_height,
+                char_width,
+                palette.accent,
+                false,
+            );
+            for quad in &mut link {
+                quad.bounds.origin.y += line_height - px(3.);
+                quad.bounds.size.height = px(1.);
+                quad.corner_radii = Default::default();
+            }
+        }
+        let link_hovered = view.hover_link.is_some();
+
         let snapshot = LayoutSnapshot {
             bounds,
             text_left,
@@ -800,6 +825,8 @@ impl Element for EditorElement {
             lines,
             gutter,
             cursors,
+            link,
+            link_hovered,
             scrollbar,
             notice,
             line_height,
@@ -823,7 +850,12 @@ impl Element for EditorElement {
             ElementInputHandler::new(bounds, self.view.clone()),
             cx,
         );
-        window.set_cursor_style(CursorStyle::IBeam, &prepaint.hitbox);
+        let cursor = if prepaint.link_hovered {
+            CursorStyle::PointingHand
+        } else {
+            CursorStyle::IBeam
+        };
+        window.set_cursor_style(cursor, &prepaint.hitbox);
         self.register_mouse_listeners(&prepaint.hitbox, prepaint.line_height, window);
 
         window.paint_quad(fill(bounds, palette.editor_bg));
@@ -831,6 +863,7 @@ impl Element for EditorElement {
         let backgrounds = std::mem::take(&mut prepaint.backgrounds);
         let lines = std::mem::take(&mut prepaint.lines);
         let cursors = std::mem::take(&mut prepaint.cursors);
+        let link = std::mem::take(&mut prepaint.link);
         window.with_content_mask(
             Some(ContentMask {
                 bounds: prepaint.text_bounds,
@@ -841,6 +874,9 @@ impl Element for EditorElement {
                 }
                 for (origin, line) in &lines {
                     let _ = line.paint(*origin, line_height, TextAlign::Left, None, window, cx);
+                }
+                for quad in link {
+                    window.paint_quad(quad);
                 }
                 for cursor in cursors {
                     window.paint_quad(cursor);
@@ -891,13 +927,32 @@ impl EditorElement {
             }
         });
         let view = self.view.clone();
-        window.on_mouse_event(move |event: &MouseMoveEvent, phase, _window, cx| {
-            if phase != DispatchPhase::Bubble || event.pressed_button != Some(MouseButton::Left) {
+        let hb = hitbox.clone();
+        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+            if phase != DispatchPhase::Bubble {
                 return;
             }
-            if view.read(cx).is_dragging() {
+            if event.pressed_button.is_none() {
+                // Cmd over a word: show it as a link to its definition.
+                let link = (event.modifiers.secondary() && hb.is_hovered(window))
+                    .then(|| view.read(cx).link_at(event.position))
+                    .flatten();
+                if link.is_some() || view.read(cx).hover_link.is_some() {
+                    view.update(cx, |view, cx| view.set_hover_link(link, cx));
+                }
+                return;
+            }
+            if event.pressed_button == Some(MouseButton::Left) && view.read(cx).is_dragging() {
                 view.update(cx, |view, cx| view.mouse_drag(event.position, cx));
             }
+        });
+        let view = self.view.clone();
+        let hb = hitbox.clone();
+        window.on_modifiers_changed(move |event, window, cx| {
+            let link = (event.modifiers.secondary() && hb.is_hovered(window))
+                .then(|| view.read(cx).link_at(window.mouse_position()))
+                .flatten();
+            view.update(cx, |view, cx| view.set_hover_link(link, cx));
         });
         let view = self.view.clone();
         window.on_mouse_event(move |event: &MouseUpEvent, phase, _window, cx| {

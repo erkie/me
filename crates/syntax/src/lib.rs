@@ -21,6 +21,7 @@ use tree_sitter::{
 };
 
 mod languages;
+mod tags;
 
 pub use languages::LANGUAGES;
 
@@ -108,6 +109,81 @@ pub struct LanguageDef {
     /// Highlight queries, concatenated in order. Earlier patterns win when
     /// two match the same node.
     highlights: &'static [&'static str],
+    /// Tags queries (definitions), for outlines and go to definition.
+    tags: &'static [&'static str],
+}
+
+/// What kind of thing a symbol defines.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SymbolKind {
+    Function,
+    Method,
+    Class,
+    Interface,
+    Module,
+    Macro,
+    Constant,
+    Type,
+    /// A Rust `impl` block: a container, not something to jump to by name.
+    Impl,
+    Heading,
+    Other,
+}
+
+impl SymbolKind {
+    fn from_capture(name: &str) -> Option<Self> {
+        let kind = name.strip_prefix("definition.")?;
+        Some(match kind {
+            "function" => Self::Function,
+            "method" => Self::Method,
+            "class" | "struct" | "enum" | "union" => Self::Class,
+            "interface" | "trait" | "protocol" => Self::Interface,
+            "module" | "namespace" => Self::Module,
+            "macro" => Self::Macro,
+            "constant" | "variable" => Self::Constant,
+            "type" => Self::Type,
+            "impl" => Self::Impl,
+            "heading" => Self::Heading,
+            _ => Self::Other,
+        })
+    }
+
+    /// A short word for lists ("fn", "struct", …).
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Function => "function",
+            Self::Method => "method",
+            Self::Class => "type",
+            Self::Interface => "interface",
+            Self::Module => "module",
+            Self::Macro => "macro",
+            Self::Constant => "constant",
+            Self::Type => "type",
+            Self::Impl => "impl",
+            Self::Heading => "heading",
+            Self::Other => "symbol",
+        }
+    }
+}
+
+/// A definition found by a tags query.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Symbol {
+    pub name: String,
+    pub kind: SymbolKind,
+    /// Bytes of the whole definition (for nesting).
+    pub range: Range<usize>,
+    /// Bytes of the name.
+    pub name_range: Range<usize>,
+    /// Line and char column of the name.
+    pub line: usize,
+    pub col: usize,
+}
+
+struct Tags {
+    query: Query,
+    name: u32,
+    kinds: Vec<Option<SymbolKind>>,
 }
 
 /// A built language, ready to parse and highlight.
@@ -116,6 +192,8 @@ pub struct Language {
     grammar: tree_sitter::Language,
     query: Query,
     capture_highlights: Vec<Option<Highlight>>,
+    /// Built the first time symbols are asked for.
+    tags: OnceLock<Option<Tags>>,
 }
 
 impl std::fmt::Debug for Language {
@@ -127,6 +205,11 @@ impl std::fmt::Debug for Language {
 }
 
 impl LanguageDef {
+    /// Whether a tags query finds this language's definitions.
+    pub fn has_symbols(&self) -> bool {
+        !self.tags.is_empty()
+    }
+
     /// Builds (once) and returns the language. `None` if its query fails to
     /// compile, in which case files open without highlighting.
     pub fn load(&'static self) -> Option<Arc<Language>> {
@@ -161,8 +244,105 @@ impl LanguageDef {
             grammar,
             query,
             capture_highlights,
+            tags: OnceLock::new(),
         })
     }
+}
+
+impl Language {
+    fn tags(&self) -> Option<&Tags> {
+        self.tags
+            .get_or_init(|| {
+                if self.def.tags.is_empty() {
+                    return None;
+                }
+                let source = self.def.tags.join("\n");
+                let query = match Query::new(&self.grammar, &source) {
+                    Ok(query) => query,
+                    Err(err) => {
+                        eprintln!("me-syntax: tags query for {} failed: {err}", self.def.name);
+                        return None;
+                    }
+                };
+                let names = query.capture_names();
+                let name = names.iter().position(|n| *n == "name")? as u32;
+                let kinds = names.iter().map(|n| SymbolKind::from_capture(n)).collect();
+                Some(Tags { query, name, kinds })
+            })
+            .as_ref()
+    }
+
+    /// The definitions in a parsed document, in document order. Containers
+    /// come before what they contain.
+    pub fn symbols(&self, tree: &Tree, rope: &Rope) -> Vec<Symbol> {
+        let Some(tags) = self.tags() else {
+            return Vec::new();
+        };
+        let mut cursor = QueryCursor::new();
+        cursor.set_match_limit(1024);
+        let mut matches = cursor.matches(&tags.query, tree.root_node(), RopeText(rope.slice(..)));
+        let mut symbols = Vec::new();
+        while let Some(m) = matches.next() {
+            let mut name = None;
+            let mut definition = None;
+            for capture in m.captures {
+                if capture.index == tags.name {
+                    name = Some(capture.node);
+                } else if let Some(kind) = tags.kinds[capture.index as usize] {
+                    definition = Some((capture.node, kind));
+                }
+            }
+            let (Some(name), Some((node, kind))) = (name, definition) else {
+                continue;
+            };
+            let name_range = name.byte_range();
+            let text: String = rope
+                .byte_slice(name_range.clone())
+                .chars()
+                .take(160)
+                .collect();
+            let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            if text.is_empty() {
+                continue;
+            }
+            let line = rope.byte_to_line(name_range.start);
+            let col = rope.byte_to_char(name_range.start) - rope.line_to_char(line);
+            symbols.push(Symbol {
+                name: text,
+                kind,
+                range: node.byte_range(),
+                name_range,
+                line,
+                col,
+            });
+        }
+        symbols.sort_by_key(|s| (s.range.start, std::cmp::Reverse(s.range.end)));
+        // Several patterns can match one definition (a method is also a
+        // function): keep the first.
+        symbols.dedup_by(|b, a| a.name_range == b.name_range);
+        symbols
+    }
+}
+
+/// Parses `text` and returns its symbols (for indexing files that aren't
+/// open). Gives up on files that take more than a second to parse.
+pub fn symbols_in(def: &'static LanguageDef, text: &str) -> Vec<Symbol> {
+    let Some(language) = def.load().filter(|l| l.tags().is_some()) else {
+        return Vec::new();
+    };
+    let rope = Rope::from_str(text);
+    match parse(&language, &rope, None, Duration::from_secs(1)) {
+        Some(tree) => language.symbols(&tree, &rope),
+        None => Vec::new(),
+    }
+}
+
+/// The symbols enclosing byte `at`, outermost first.
+pub fn enclosing(symbols: &[Symbol], at: usize) -> Vec<&Symbol> {
+    symbols
+        .iter()
+        .filter(|s| s.range.start <= at && at < s.range.end.max(s.range.start + 1))
+        .collect()
 }
 
 /// Picks a language from a file name.
@@ -227,6 +407,14 @@ impl Syntax {
         Self {
             language,
             tree: None,
+        }
+    }
+
+    /// The definitions in the current tree (empty until the first parse).
+    pub fn symbols(&self, rope: &Rope) -> Vec<Symbol> {
+        match &self.tree {
+            Some(tree) => self.language.symbols(tree, rope),
+            None => Vec::new(),
         }
     }
 
@@ -393,6 +581,73 @@ impl<'a> Iterator for ChunkBytes<'a> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use me_text::EditorState;
+
+    fn symbol_names(lang: &str, source: &str) -> Vec<(String, SymbolKind)> {
+        symbols_in(language_by_name(lang).unwrap(), source)
+            .into_iter()
+            .map(|s| (s.name, s.kind))
+            .collect()
+    }
+
+    #[test]
+    fn every_tags_query_compiles() {
+        for def in LANGUAGES.iter().filter(|d| !d.tags.is_empty()) {
+            let language = def.load().unwrap();
+            assert!(language.tags().is_some(), "{}", def.name);
+        }
+    }
+
+    #[test]
+    fn rust_symbols_nest() {
+        let src = "struct A;\nimpl A {\n    fn go(&self) {}\n}\nconst N: u8 = 1;\nfn main() {}\n";
+        assert_eq!(
+            symbol_names("Rust", src),
+            vec![
+                ("A".into(), SymbolKind::Class),
+                ("A".into(), SymbolKind::Impl),
+                ("go".into(), SymbolKind::Method),
+                ("N".into(), SymbolKind::Constant),
+                ("main".into(), SymbolKind::Function),
+            ]
+        );
+        let symbols = symbols_in(language_by_name("Rust").unwrap(), src);
+        let at = src.find("{}").unwrap();
+        let chain: Vec<&str> = enclosing(&symbols, at)
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(chain, vec!["A", "go"]);
+        assert_eq!((symbols[2].line, symbols[2].col), (2, 7));
+    }
+
+    #[test]
+    fn markdown_headings_nest() {
+        let src = "# Title\n\nText\n\n## Install\n\nmore\n\n## Usage\n";
+        assert_eq!(
+            symbol_names("Markdown", src),
+            vec![
+                ("Title".into(), SymbolKind::Heading),
+                ("Install".into(), SymbolKind::Heading),
+                ("Usage".into(), SymbolKind::Heading),
+            ]
+        );
+        let symbols = symbols_in(language_by_name("Markdown").unwrap(), src);
+        let chain: Vec<&str> = enclosing(&symbols, src.find("more").unwrap())
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(chain, vec!["Title", "Install"]);
+    }
+
+    #[test]
+    fn other_languages_have_symbols() {
+        assert!(symbol_names("Python", "class A:\n    def f(self): pass\n").len() >= 2);
+        assert!(!symbol_names("Go", "package x\nfunc F() {}\n").is_empty());
+        assert!(!symbol_names("TypeScript", "function f() {}\nclass C {}\n").is_empty());
+        assert!(!symbol_names("Shell", "deploy() { echo; }\n").is_empty());
+    }
 
     #[test]
     fn shebangs() {
@@ -404,8 +659,6 @@ mod tests {
         assert_eq!(name("#!/usr/bin/perl"), None);
         assert_eq!(name("echo hi"), None);
     }
-    use super::*;
-    use me_text::EditorState;
 
     fn highlights_of(lang: &str, source: &str) -> Vec<(String, Highlight)> {
         let def = language_by_name(lang).unwrap();

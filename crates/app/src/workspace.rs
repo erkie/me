@@ -3,6 +3,9 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use me_syntax::SymbolKind;
 
 use gpui::{
     AnyElement, App, AppContext, ClickEvent, Context, CursorStyle, Entity, FocusHandle, Focusable,
@@ -21,8 +24,10 @@ use crate::goto_line::{GoToLineEvent, GoToLinePrompt};
 use crate::image_preview::{ImagePreview, is_image, is_svg};
 use crate::markdown::{MarkdownEvent, MarkdownPreview, is_markdown};
 use crate::palette::{CommandPalette, PaletteEvent};
+use crate::picker::{Picker, PickerEvent, PickerItem};
 use crate::search_panel::{SearchPanel, SearchPanelEvent};
 use crate::session;
+use crate::symbols::{self, Location, SymbolIndex};
 use crate::theme;
 
 /// Height of the title/tab bar. On macOS the traffic lights sit in it.
@@ -170,6 +175,21 @@ pub struct Workspace {
     save_task: Option<Task<()>>,
     /// The window's frame when last seen, for saving after it closed.
     last_bounds: Option<[f32; 4]>,
+    /// Definitions in the folder's code, built the first time it's needed.
+    symbol_index: Option<Arc<SymbolIndex>>,
+    /// A go to definition waiting for the index to finish.
+    pending_definition: Option<Task<()>>,
+    picker: Entity<Picker>,
+    picker_open: bool,
+    picker_return: Option<FocusHandle>,
+    /// Where each picker item goes.
+    picker_targets: Vec<Location>,
+    /// Go back / forward through jumps (go to definition, symbol pickers).
+    nav_back: Vec<Location>,
+    nav_forward: Vec<Location>,
+    /// A short message in the status bar ("No definition for foo").
+    flash: Option<SharedString>,
+    flash_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -184,8 +204,10 @@ impl Workspace {
         let find_bar = cx.new(|cx| FindBar::new(window, cx));
         let go_to_line = cx.new(|cx| GoToLinePrompt::new(window, cx));
         let palette = cx.new(|cx| CommandPalette::new(window, cx));
+        let picker = cx.new(|cx| Picker::new(window, cx));
         let mut subscriptions = vec![
             cx.subscribe_in(&palette, window, Self::on_palette_event),
+            cx.subscribe_in(&picker, window, Self::on_picker_event),
             cx.subscribe_in(&find_bar, window, Self::on_find_bar_event),
             cx.subscribe_in(
                 &go_to_line,
@@ -244,6 +266,16 @@ impl Workspace {
             written_revisions: HashMap::new(),
             save_task: None,
             last_bounds: None,
+            symbol_index: None,
+            pending_definition: None,
+            picker,
+            picker_open: false,
+            picker_return: None,
+            picker_targets: Vec::new(),
+            nav_back: Vec::new(),
+            nav_forward: Vec::new(),
+            flash: None,
+            flash_task: None,
             _subscriptions: subscriptions,
         };
         if let Some(root) = root {
@@ -265,6 +297,7 @@ impl Workspace {
             session::delete(&self.session_key);
         }
         self.session_key = session::key_for_root(&root);
+        self.symbol_index = None;
         let tree = cx.new(|cx| FileTree::new(root.clone(), cx));
         self._subscriptions.push(cx.subscribe_in(
             &tree,
@@ -342,6 +375,9 @@ impl Workspace {
     fn on_window_activated(&mut self, cx: &mut Context<Self>) {
         if let Some(tree) = &self.file_tree {
             tree.update(cx, |tree, cx| tree.refresh(cx));
+        }
+        if let Some(index) = &self.symbol_index {
+            index.refresh(|| {});
         }
         for tab in &self.tabs {
             tab.editor
@@ -500,6 +536,334 @@ impl Workspace {
             (None, None) => "Me".into(),
         };
         window.set_window_title(&title);
+    }
+
+    // ---------------------------------------------------------------------
+    // Go to definition and symbols
+    // ---------------------------------------------------------------------
+
+    /// The folder's symbol index, started (in the background) if needed.
+    fn ensure_index(&mut self) -> Option<Arc<SymbolIndex>> {
+        let root = self.root.clone()?;
+        let index = self
+            .symbol_index
+            .get_or_insert_with(|| SymbolIndex::new(root))
+            .clone();
+        if !index.is_ready() {
+            index.refresh(|| {});
+        }
+        Some(index)
+    }
+
+    /// Jumps to the definition of the identifier at `pos` in `editor`: from
+    /// the file's own symbols and the folder's index.
+    fn go_to_definition(
+        &mut self,
+        editor: Entity<EditorView>,
+        pos: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.find_definition(editor, pos, true, window, cx);
+    }
+
+    fn find_definition(
+        &mut self,
+        editor: Entity<EditorView>,
+        pos: usize,
+        wait_for_index: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((_, word)) = editor.read(cx).identifier_at(pos) else {
+            return;
+        };
+        let path = editor.read(cx).path().map(Path::to_path_buf);
+        let index = self.ensure_index();
+        let mut candidates: Vec<Location> = Vec::new();
+        // This file first, from its live (maybe unsaved) text.
+        let own = editor.update(cx, |e, _| e.symbols());
+        let at_byte = editor.read(cx).state.doc.rope().char_to_byte(pos);
+        let mut on_definition = false;
+        for s in own
+            .iter()
+            .filter(|s| s.name == word && s.kind != SymbolKind::Impl)
+        {
+            if s.name_range.contains(&at_byte) || s.name_range.end == at_byte {
+                on_definition = true;
+                continue;
+            }
+            if let Some(path) = &path {
+                candidates.push(Location {
+                    path: path.clone(),
+                    name: Arc::from(s.name.as_str()),
+                    kind: s.kind,
+                    line: s.line,
+                    col: s.col,
+                });
+            }
+        }
+        if let Some(index) = &index {
+            candidates.extend(
+                index
+                    .lookup(&word)
+                    .into_iter()
+                    .filter(|l| Some(&l.path) != path.as_ref() && l.kind != SymbolKind::Impl),
+            );
+        }
+        symbols::rank(&mut candidates, path.as_deref());
+        match candidates.len() {
+            0 if wait_for_index && index.as_ref().is_some_and(|i| !i.is_ready()) => {
+                let index = index.unwrap();
+                self.flash_message(format!("Indexing symbols… looking for {word}"), cx);
+                self.pending_definition = Some(cx.spawn_in(window, async move |this, cx| {
+                    while index.is_indexing() {
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(50))
+                            .await;
+                    }
+                    this.update_in(cx, |this, window, cx| {
+                        this.pending_definition = None;
+                        this.flash = None;
+                        this.find_definition(editor, pos, false, window, cx);
+                    })
+                    .ok();
+                }));
+            }
+            0 if on_definition => {}
+            0 => self.flash_message(format!("No definition found for {word}"), cx),
+            1 => {
+                let target = candidates.remove(0);
+                self.jump_to(target, window, cx);
+            }
+            _ => {
+                let title = format!("Definitions of {word}");
+                self.show_locations(&title, candidates, window, cx);
+            }
+        }
+    }
+
+    /// The location the cursor is at, for going back to it.
+    fn current_location(&self, cx: &App) -> Option<Location> {
+        let editor = self.active_editor()?;
+        let e = editor.read(cx);
+        let path = e.path()?.to_path_buf();
+        let (line, col) = e.state.doc.line_col(e.state.selections().primary().head);
+        Some(Location {
+            path,
+            name: Arc::from(""),
+            kind: SymbolKind::Other,
+            line,
+            col,
+        })
+    }
+
+    /// Opens `target` at its line and column, remembering where we were.
+    fn jump_to(&mut self, target: Location, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(here) = self.current_location(cx) {
+            self.nav_back.push(here);
+            self.nav_back.truncate(100);
+        }
+        self.nav_forward.clear();
+        self.open_location(&target, window, cx);
+    }
+
+    fn open_location(&mut self, target: &Location, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_path(
+            target.path.clone(),
+            OpenOptions {
+                pin: true,
+                line: Some(target.line as u32 + 1),
+                column: Some(target.col as u32 + 1),
+                ..Default::default()
+            },
+            window,
+            cx,
+        );
+    }
+
+    fn navigate(&mut self, back: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let stack = if back {
+            &mut self.nav_back
+        } else {
+            &mut self.nav_forward
+        };
+        let Some(target) = stack.pop() else { return };
+        if let Some(here) = self.current_location(cx) {
+            if back {
+                self.nav_forward.push(here);
+            } else {
+                self.nav_back.push(here);
+            }
+        }
+        self.open_location(&target, window, cx);
+    }
+
+    fn show_picker(
+        &mut self,
+        placeholder: &str,
+        items: Vec<PickerItem>,
+        targets: Vec<Location>,
+        initial: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.finder_open = false;
+        self.palette_open = false;
+        if !self.picker_open {
+            self.picker_return = window.focused(cx);
+        }
+        self.picker_targets = targets;
+        self.picker_open = true;
+        self.picker
+            .update(cx, |p, cx| p.show(placeholder, items, initial, window, cx));
+        cx.notify();
+    }
+
+    fn on_picker_event(
+        &mut self,
+        _: &Entity<Picker>,
+        event: &PickerEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.picker_open = false;
+        match self.picker_return.take() {
+            Some(handle) => window.focus(&handle, cx),
+            None => self.focus_active(window, cx),
+        }
+        if let PickerEvent::Picked(ix) = event
+            && let Some(target) = self.picker_targets.get(*ix).cloned()
+        {
+            self.jump_to(target, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// A picker over places in the project (definitions, project symbols).
+    fn show_locations(
+        &mut self,
+        placeholder: &str,
+        locations: Vec<Location>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let items = locations
+            .iter()
+            .map(|l| PickerItem {
+                label: SharedString::from(l.name.to_string()),
+                detail: format!("{}:{}", self.relative_path(&l.path), l.line + 1).into(),
+                icon: None,
+                symbol: Some(l.kind),
+                depth: 0,
+            })
+            .collect();
+        self.show_picker(placeholder, items, locations, 0, window, cx);
+    }
+
+    /// Cmd+R: the symbols in this file, nested, starting at the cursor's.
+    fn show_file_symbols(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editor) = self.active_editor() else {
+            return;
+        };
+        let Some(path) = editor.read(cx).path().map(Path::to_path_buf) else {
+            return;
+        };
+        let symbols = editor.update(cx, |e, _| e.symbols());
+        if symbols.is_empty() {
+            self.flash_message("No symbols in this file".to_string(), cx);
+            return;
+        }
+        let at = {
+            let e = editor.read(cx);
+            e.state
+                .doc
+                .rope()
+                .char_to_byte(e.state.selections().primary().head)
+        };
+        let mut items = Vec::new();
+        let mut targets = Vec::new();
+        let mut initial = 0;
+        for (ix, s) in symbols.iter().enumerate() {
+            let depth = symbols[..ix]
+                .iter()
+                .filter(|outer| {
+                    outer.range.start <= s.range.start && s.range.end <= outer.range.end
+                })
+                .count();
+            if s.range.start <= at && at < s.range.end {
+                initial = ix;
+            }
+            items.push(PickerItem {
+                label: symbol_label(s).into(),
+                detail: format!("{} · line {}", s.kind.label(), s.line + 1).into(),
+                icon: None,
+                symbol: Some(s.kind),
+                depth,
+            });
+            targets.push(Location {
+                path: path.clone(),
+                name: Arc::from(s.name.as_str()),
+                kind: s.kind,
+                line: s.line,
+                col: s.col,
+            });
+        }
+        self.show_picker("Go to symbol in file…", items, targets, initial, window, cx);
+    }
+
+    /// Cmd+Shift+R: every definition in the folder.
+    fn show_project_symbols(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(index) = self.ensure_index() else {
+            self.show_file_symbols(window, cx);
+            return;
+        };
+        if !index.is_ready() {
+            self.flash_message("Indexing symbols… try again in a moment".to_string(), cx);
+            return;
+        }
+        let locations = index.all(50_000);
+        self.show_locations("Go to symbol in project…", locations, window, cx);
+    }
+
+    /// Shift+F12: occurrences of the word under the cursor, in the project
+    /// search (a language server gives exact references).
+    fn find_references(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let word = self.active_editor().and_then(|editor| {
+            let e = editor.read(cx);
+            e.identifier_at(e.state.selections().primary().head)
+        });
+        let (Some((_, word)), Some(search)) = (word, self.search_panel.clone()) else {
+            self.show_search(window, cx);
+            return;
+        };
+        self.sidebar_visible = true;
+        self.sidebar_mode = SidebarMode::Search;
+        search.update(cx, |panel, cx| panel.show_word(word, window, cx));
+        cx.notify();
+    }
+
+    /// F12: go to the definition of the identifier at the cursor.
+    fn go_to_definition_at_cursor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = self.active_editor() {
+            let head = editor.read(cx).state.selections().primary().head;
+            self.go_to_definition(editor, head, window, cx);
+        }
+    }
+
+    fn flash_message(&mut self, message: String, cx: &mut Context<Self>) {
+        self.flash = Some(message.into());
+        self.flash_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(4))
+                .await;
+            this.update(cx, |this, cx| {
+                this.flash = None;
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
     }
 
     // ---------------------------------------------------------------------
@@ -742,6 +1106,9 @@ impl Workspace {
                 ix
             }
         };
+        if symbols::indexable(&path) {
+            self.ensure_index();
+        }
         self.recent.retain(|p| p != &path);
         self.recent.insert(0, path);
         self.recent.truncate(50);
@@ -800,7 +1167,7 @@ impl Workspace {
         let subscriptions = vec![cx.subscribe_in(
             &editor,
             window,
-            move |this, _, event: &EditorEvent, window, cx| match event {
+            move |this, editor, event: &EditorEvent, window, cx| match event {
                 EditorEvent::Changed | EditorEvent::DirtyChanged => {
                     if let Some(tab) = this.tabs.iter_mut().find(|t| t.id == id)
                         && !tab.pinned
@@ -815,10 +1182,23 @@ impl Workspace {
                     if let Some(tree) = &this.file_tree {
                         tree.update(cx, |tree, cx| tree.refresh(cx));
                     }
+                    if let (Some(index), Some(path)) = (
+                        this.symbol_index.clone(),
+                        editor.read(cx).path().map(Path::to_path_buf),
+                    ) && symbols::indexable(&path)
+                    {
+                        let text = editor.read(cx).text();
+                        cx.background_executor()
+                            .spawn(async move { index.update(&path, &text) })
+                            .detach();
+                    }
                     this.update_title(window, cx);
                     cx.notify();
                 }
                 EditorEvent::Loaded => cx.notify(),
+                EditorEvent::GoToDefinition(pos) => {
+                    this.go_to_definition(editor.clone(), *pos, window, cx)
+                }
             },
         )];
         Tab {
@@ -1227,7 +1607,12 @@ impl Workspace {
         }
         self.finder_open = false;
         self.go_to_line_open = false;
-        let target = window.focused(cx);
+        let target = if self.picker_open {
+            self.picker_open = false;
+            self.picker_return.take()
+        } else {
+            window.focused(cx)
+        };
         self.palette
             .update(cx, |p, cx| p.reset(target.as_ref(), window, cx));
         self.palette_return = target;
@@ -1624,6 +2009,7 @@ impl Workspace {
                 children.push(
                     div()
                         .id("crumb-file")
+                        .flex_none()
                         .flex()
                         .items_center()
                         .gap(px(2.))
@@ -1635,11 +2021,10 @@ impl Workspace {
                             svg()
                                 .path(icon.path)
                                 .size(px(20.))
-                                .mx(px(-3.))
                                 .flex_none()
                                 .text_color(icon.color),
                         )
-                        .child(name.clone())
+                        .child(div().flex_none().child(name.clone()))
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, event: &MouseDownEvent, window, cx| {
@@ -1662,6 +2047,7 @@ impl Workspace {
                 children.push(
                     div()
                         .id(("crumb", ix))
+                        .flex_none()
                         .px(px(4.))
                         .rounded(px(4.))
                         .hover(|s| s.bg(palette.hover).text_color(palette.text))
@@ -1680,6 +2066,39 @@ impl Workspace {
                 );
                 children.push(chevron().into_any_element());
             }
+        }
+        // Then the symbols around the cursor: impl › fn.
+        let editor = tab.editor.clone();
+        let symbols = editor.update(cx, |e, _| e.symbols());
+        let at = {
+            let e = editor.read(cx);
+            e.state
+                .doc
+                .rope()
+                .char_to_byte(e.state.selections().primary().head)
+        };
+        for (ix, symbol) in me_syntax::enclosing(&symbols, at).into_iter().enumerate() {
+            children.push(chevron().into_any_element());
+            children.push(
+                div()
+                    .id(("crumb-symbol", ix))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .px(px(4.))
+                    .rounded(px(4.))
+                    .hover(|s| s.bg(palette.hover).text_color(palette.text))
+                    .child(crate::picker::symbol_badge(symbol.kind, &palette))
+                    .child(div().flex_none().child(symbol_label(symbol)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                            this.show_file_symbols(window, cx)
+                        }),
+                    )
+                    .into_any_element(),
+            );
         }
         Some(
             div()
@@ -1790,6 +2209,14 @@ impl Workspace {
                     indentation_menu(hard_tabs, width).show(event.position, window, cx)
                 }),
             ));
+        }
+        if let Some(flash) = &self.flash {
+            left.push(
+                div()
+                    .text_color(palette.text)
+                    .child(flash.clone())
+                    .into_any_element(),
+            );
         }
         div()
             .h(px(STATUS_BAR_HEIGHT))
@@ -2060,6 +2487,7 @@ impl Render for Workspace {
         };
         let finder = self.finder.clone().filter(|_| self.finder_open);
         let command_palette = self.palette_open.then(|| self.palette.clone());
+        let picker = self.picker_open.then(|| self.picker.clone());
         let mut context = KeyContext::new_with_defaults();
         context.add("Workspace");
 
@@ -2114,6 +2542,7 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &ToggleFileFinder, window, cx| {
                 this.palette_open = false;
+                this.picker_open = false;
                 if this.finder_open {
                     this.finder_open = false;
                     this.focus_active(window, cx);
@@ -2240,6 +2669,40 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &NewFile, window, cx| {
                 this.open_text("", window, cx);
             }))
+            .on_action(cx.listener(|this, _: &GoToDefinition, window, cx| {
+                this.go_to_definition_at_cursor(window, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &FindReferences, window, cx| {
+                    this.find_references(window, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &GoToSymbol, window, cx| {
+                if this.picker_open {
+                    this.on_picker_event(&this.picker.clone(), &PickerEvent::Dismiss, window, cx);
+                } else {
+                    this.show_file_symbols(window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &GoToProjectSymbol, window, cx| {
+                this.show_project_symbols(window, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &NavigateBack, window, cx| this.navigate(true, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &NavigateForward, window, cx| {
+                    this.navigate(false, window, cx)
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Navigate(gpui::NavigationDirection::Back),
+                cx.listener(|this, _, window, cx| this.navigate(true, window, cx)),
+            )
+            .on_mouse_down(
+                MouseButton::Navigate(gpui::NavigationDirection::Forward),
+                cx.listener(|this, _, window, cx| this.navigate(false, window, cx)),
+            )
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
                 if this.resizing_sidebar {
                     if event.pressed_button == Some(MouseButton::Left) {
@@ -2331,5 +2794,25 @@ impl Render for Workspace {
                         .child(finder),
                 )
             })
+            .when_some(picker, |el, picker| {
+                el.child(
+                    div()
+                        .absolute()
+                        .top(px(TITLE_BAR_HEIGHT + 8.))
+                        .left_0()
+                        .right_0()
+                        .flex()
+                        .justify_center()
+                        .child(picker),
+                )
+            })
+    }
+}
+
+/// How a symbol reads in lists: impl blocks as `impl Name`.
+fn symbol_label(symbol: &me_syntax::Symbol) -> String {
+    match symbol.kind {
+        SymbolKind::Impl => format!("impl {}", symbol.name),
+        _ => symbol.name.clone(),
     }
 }

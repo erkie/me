@@ -15,10 +15,12 @@ mod markdown;
 mod menus;
 mod mermaid;
 mod palette;
+mod picker;
 mod platform;
 mod search_panel;
 mod session;
 mod settings;
+mod symbols;
 mod theme;
 mod workspace;
 

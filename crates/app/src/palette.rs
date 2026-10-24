@@ -61,6 +61,15 @@ fn commands(cx: &App) -> Vec<(String, Box<dyn Action>)> {
     let mut list: Vec<(String, Box<dyn Action>)> = vec![
         ("Go to File…".into(), Box::new(ToggleFileFinder)),
         ("Go to Line…".into(), Box::new(GoToLine)),
+        ("Go to Symbol in File…".into(), Box::new(GoToSymbol)),
+        (
+            "Go to Symbol in Project…".into(),
+            Box::new(GoToProjectSymbol),
+        ),
+        ("Go to Definition".into(), Box::new(GoToDefinition)),
+        ("Find References".into(), Box::new(FindReferences)),
+        ("Go Back".into(), Box::new(NavigateBack)),
+        ("Go Forward".into(), Box::new(NavigateForward)),
         ("Find…".into(), Box::new(Find)),
         ("Find in Project…".into(), Box::new(ToggleProjectSearch)),
         (word_wrap.into(), Box::new(ToggleWordWrap)),
