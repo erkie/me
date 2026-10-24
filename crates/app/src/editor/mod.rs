@@ -261,6 +261,19 @@ impl EditorView {
         self.syntax.as_ref().map(|s| s.language().def.name)
     }
 
+    /// The file was renamed or moved on disk.
+    pub fn set_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let old = self.path.replace(path.clone());
+        self.disk_mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        let old_language = old.as_deref().and_then(language_for_path).map(|l| l.name);
+        let new_language = self.detect_language(&path);
+        if old_language != new_language.map(|l| l.name) {
+            self.set_language(new_language, cx);
+        }
+        cx.emit(EditorEvent::Saved);
+        cx.notify();
+    }
+
     /// Highlights the file as `language`, or as plain text.
     pub fn set_language(&mut self, language: Option<&'static LanguageDef>, cx: &mut Context<Self>) {
         self.syntax = language.and_then(|def| def.load()).map(Syntax::new);

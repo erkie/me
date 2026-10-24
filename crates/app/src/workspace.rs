@@ -60,6 +60,8 @@ pub struct OpenOptions {
     pub pin: bool,
     pub line: Option<u32>,
     pub column: Option<u32>,
+    /// Leave focus where it is (a single click in the file tree).
+    pub keep_focus: bool,
 }
 
 pub struct Workspace {
@@ -180,11 +182,29 @@ impl Workspace {
                         path.clone(),
                         OpenOptions {
                             pin: *pin,
+                            keep_focus: !*pin,
                             ..Default::default()
                         },
                         window,
                         cx,
                     );
+                }
+                FileTreeEvent::Renamed { from, to } => this.paths_moved(from, to, window, cx),
+                FileTreeEvent::Trashed(path) => {
+                    let ids: Vec<u64> = this
+                        .tabs
+                        .iter()
+                        .filter(|t| {
+                            let e = t.editor.read(cx);
+                            !e.is_dirty() && e.path().is_some_and(|p| p.starts_with(path))
+                        })
+                        .map(|t| t.id)
+                        .collect();
+                    for id in ids {
+                        if let Some(ix) = this.tabs.iter().position(|t| t.id == id) {
+                            this.remove_tab(ix, window, cx);
+                        }
+                    }
                 }
             },
         ));
@@ -202,6 +222,7 @@ impl Workspace {
                             pin: true,
                             line,
                             column,
+                            ..Default::default()
                         },
                         window,
                         cx,
@@ -290,6 +311,61 @@ impl Workspace {
         }
     }
 
+    /// Tabs follow a file or folder renamed from `from` to `to`.
+    fn paths_moved(&mut self, from: &Path, to: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        let moved = |path: &Path| -> Option<PathBuf> {
+            path.strip_prefix(from).ok().map(|rest| {
+                if rest.as_os_str().is_empty() {
+                    to.to_path_buf()
+                } else {
+                    to.join(rest)
+                }
+            })
+        };
+        for tab in &self.tabs {
+            let new_path = tab.editor.read(cx).path().and_then(moved);
+            if let Some(new_path) = new_path {
+                tab.editor.update(cx, |e, cx| e.set_path(new_path, cx));
+            }
+        }
+        for path in self.recent.iter_mut().chain(self.closed.iter_mut()) {
+            if let Some(new_path) = moved(path) {
+                *path = new_path;
+            }
+        }
+        self.update_title(window, cx);
+        cx.notify();
+    }
+
+    fn show_tab_menu(
+        &mut self,
+        id: u64,
+        position: gpui::Point<gpui::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(ix) = self.tabs.iter().position(|t| t.id == id) else {
+            return;
+        };
+        // Menu commands act on the active tab.
+        self.activate(ix, window, cx);
+        let has_path = self.tabs[ix].editor.read(cx).path().is_some();
+        let mut menu = gpui_component::native_menu::NativeMenu::new()
+            .menu("Close Tab", Box::new(CloseTab))
+            .menu("Close Other Tabs", Box::new(CloseOtherTabs))
+            .menu("Close Tabs to the Right", Box::new(CloseTabsToTheRight));
+        if has_path {
+            menu = menu
+                .separator()
+                .menu(crate::platform::REVEAL_LABEL, Box::new(RevealInFinder))
+                .menu("Reveal in Sidebar", Box::new(RevealInSidebar))
+                .separator()
+                .menu("Copy Path", Box::new(CopyPath))
+                .menu("Copy Relative Path", Box::new(CopyRelativePath));
+        }
+        menu.show(position, window, cx);
+    }
+
     fn focus_active(&self, window: &mut Window, cx: &mut App) {
         match self.active_tab() {
             Some(tab) => window.focus(&tab.content_focus(cx), cx),
@@ -335,7 +411,7 @@ impl Workspace {
             if options.pin {
                 self.tabs[ix].pinned = true;
             }
-            self.activate(ix, window, cx);
+            self.activate_tab(ix, !options.keep_focus, window, cx);
             if let Some(line) = options.line {
                 self.tabs[ix]
                     .editor
@@ -370,7 +446,7 @@ impl Workspace {
         self.recent.retain(|p| p != &path);
         self.recent.insert(0, path);
         self.recent.truncate(50);
-        self.activate(ix, window, cx);
+        self.activate_tab(ix, !options.keep_focus, window, cx);
         id
     }
 
@@ -449,12 +525,24 @@ impl Workspace {
     }
 
     pub fn activate(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.activate_tab(ix, true, window, cx);
+    }
+
+    fn activate_tab(
+        &mut self,
+        ix: usize,
+        focus: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if ix >= self.tabs.len() {
             return;
         }
         self.active = Some(ix);
         let tab = &self.tabs[ix];
-        window.focus(&tab.content_focus(cx), cx);
+        if focus {
+            window.focus(&tab.content_focus(cx), cx);
+        }
         let path = tab.editor.read(cx).path().map(Path::to_path_buf);
         if let (Some(tree), Some(path)) = (&self.file_tree, path) {
             tree.update(cx, |tree, cx| tree.select_quietly(Some(&path), cx));
@@ -657,7 +745,7 @@ impl Workspace {
                     OpenOptions {
                         pin: true,
                         line: Some(*line),
-                        column: None,
+                        ..Default::default()
                     },
                     window,
                     cx,
@@ -989,6 +1077,12 @@ impl Workspace {
                             if let Some(ix) = this.tabs.iter().position(|t| t.id == id) {
                                 this.close_tab(ix, window, cx);
                             }
+                        }),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                            this.show_tab_menu(id, event.position, window, cx)
                         }),
                     )
                     .into_any_element()

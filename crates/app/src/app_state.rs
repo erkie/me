@@ -238,6 +238,7 @@ pub fn open(
             pin: true,
             line: file.line,
             column: file.column,
+            ..Default::default()
         };
         let id = handle
             .update(cx, |_, window, cx| {
