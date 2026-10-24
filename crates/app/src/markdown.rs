@@ -168,6 +168,9 @@ fn image_source(base: Option<PathBuf>) -> impl Fn(&SharedUri) -> ImageSource + S
 fn markdown_extensions(palette: &Palette) -> MarkdownExtensions {
     let p = palette.clone();
     MarkdownExtensions::default()
+        // YAML front matter (Jekyll, Cursor's .mdc rules) as a small table.
+        .frontmatter()
+        .plugin(gpui_component::text::FrontmatterPlugin::new())
         .block_parser(move |node, _| crate::mermaid::parse(node, &p))
         .block_renderer(crate::mermaid::NODE_NAME, |node, _, cx| {
             crate::mermaid::element(node, cx)
