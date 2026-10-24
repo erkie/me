@@ -18,6 +18,7 @@ use crate::find_bar::{FindBar, FindBarEvent};
 use crate::finder::{FinderEvent, FinderView};
 use crate::goto_line::{GoToLineEvent, GoToLinePrompt};
 use crate::markdown::{MarkdownEvent, MarkdownPreview, is_markdown};
+use crate::palette::{CommandPalette, PaletteEvent};
 use crate::search_panel::{SearchPanel, SearchPanelEvent};
 use crate::theme;
 
@@ -76,6 +77,11 @@ pub struct Workspace {
     find_bar_open: bool,
     go_to_line: Entity<GoToLinePrompt>,
     go_to_line_open: bool,
+    palette: Entity<CommandPalette>,
+    palette_open: bool,
+    /// Where focus returns when the palette closes (and where its command
+    /// runs).
+    palette_return: Option<FocusHandle>,
     tabs: Vec<Tab>,
     active: Option<usize>,
     closed: Vec<PathBuf>,
@@ -96,7 +102,9 @@ impl Workspace {
     pub fn new(root: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let find_bar = cx.new(|cx| FindBar::new(window, cx));
         let go_to_line = cx.new(|cx| GoToLinePrompt::new(window, cx));
+        let palette = cx.new(|cx| CommandPalette::new(window, cx));
         let mut subscriptions = vec![
+            cx.subscribe_in(&palette, window, Self::on_palette_event),
             cx.subscribe_in(&find_bar, window, Self::on_find_bar_event),
             cx.subscribe_in(
                 &go_to_line,
@@ -136,6 +144,9 @@ impl Workspace {
             find_bar_open: false,
             go_to_line,
             go_to_line_open: false,
+            palette,
+            palette_open: false,
+            palette_return: None,
             tabs: Vec::new(),
             active: None,
             closed: Vec::new(),
@@ -804,6 +815,48 @@ impl Workspace {
         cx.notify();
     }
 
+    fn toggle_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.palette_open {
+            self.close_palette(window, cx);
+            return;
+        }
+        self.finder_open = false;
+        self.go_to_line_open = false;
+        let target = window.focused(cx);
+        self.palette
+            .update(cx, |p, cx| p.reset(target.as_ref(), window, cx));
+        self.palette_return = target;
+        self.palette_open = true;
+        cx.notify();
+    }
+
+    fn close_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.palette_open = false;
+        match self.palette_return.take() {
+            Some(handle) => window.focus(&handle, cx),
+            None => self.focus_active(window, cx),
+        }
+        cx.notify();
+    }
+
+    fn on_palette_event(
+        &mut self,
+        _: &Entity<CommandPalette>,
+        event: &PaletteEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            PaletteEvent::Dismiss => self.close_palette(window, cx),
+            PaletteEvent::Run(action) => {
+                self.close_palette(window, cx);
+                // Runs where focus was, exactly like the key binding.
+                let action = action.boxed_clone();
+                window.defer(cx, move |window, cx| window.dispatch_action(action, cx));
+            }
+        }
+    }
+
     fn show_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(search) = self.search_panel.clone() else {
             return;
@@ -1188,6 +1241,7 @@ impl Render for Workspace {
             None => self.render_empty(cx).into_any_element(),
         };
         let finder = self.finder.clone().filter(|_| self.finder_open);
+        let command_palette = self.palette_open.then(|| self.palette.clone());
         let mut context = KeyContext::new_with_defaults();
         context.add("Workspace");
 
@@ -1200,7 +1254,28 @@ impl Render for Workspace {
             .flex()
             .text_color(palette.text)
             .font_family(theme::fonts(cx).ui.clone())
+            .on_action(cx.listener(|this, _: &ToggleCommandPalette, window, cx| {
+                this.toggle_palette(window, cx)
+            }))
+            .on_action(cx.listener(|this, action: &SetLanguage, _, cx| {
+                // Reached when the editor isn't focused (e.g. in the preview).
+                if let Some(editor) = this.active_editor() {
+                    let language = action
+                        .name
+                        .as_ref()
+                        .and_then(|n| me_syntax::language_by_name(n));
+                    editor.update(cx, |e, cx| e.set_language(language, cx));
+                }
+            }))
+            .on_action(cx.listener(|this, action: &SetIndentation, _, cx| {
+                if let Some(editor) = this.active_editor() {
+                    editor.update(cx, |e, cx| {
+                        e.set_indentation(action.hard_tabs, action.width, cx)
+                    });
+                }
+            }))
             .on_action(cx.listener(|this, _: &ToggleFileFinder, window, cx| {
+                this.palette_open = false;
                 if this.finder_open {
                     this.finder_open = false;
                     this.focus_active(window, cx);
@@ -1391,6 +1466,18 @@ impl Render for Workspace {
                         .flex()
                         .justify_center()
                         .child(self.go_to_line.clone()),
+                )
+            })
+            .when_some(command_palette, |el, command_palette| {
+                el.child(
+                    div()
+                        .absolute()
+                        .top(px(TITLE_BAR_HEIGHT + 8.))
+                        .left_0()
+                        .right_0()
+                        .flex()
+                        .justify_center()
+                        .child(command_palette),
                 )
             })
             .when_some(finder, |el, finder| {

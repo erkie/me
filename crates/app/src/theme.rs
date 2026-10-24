@@ -173,6 +173,11 @@ impl Palette {
         }
     }
 
+    /// Error text.
+    pub fn danger(&self) -> Hsla {
+        self.syntax.removed
+    }
+
     pub fn syntax(&self, highlight: Highlight) -> Option<Hsla> {
         let s = &self.syntax;
         Some(match highlight {

@@ -7,7 +7,7 @@ default-members = ["crates/text", "crates/project", "crates/ipc", "crates/cli", 
 version = "0.1.0"
 edition = "2024"
 repository = "https://github.com/erkie/me"
-rust-version = "1.90"
+rust-version = "1.95"
 
 [workspace.dependencies]
 me-text = { path = "crates/text" }
@@ -20,6 +20,7 @@ gpui = { package = "gpui-pre", version = "=0.3.9" }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.9", features = ["font-kit", "x11", "wayland"] }
 gpui-component = { version = "=0.8.0", default-features = false }
 gpui-base = "=0.8.0"
+merman = { version = "=0.9.2", default-features = false, features = ["svg", "all-diagrams"] }
 
 anyhow = "1"
 crossbeam-channel = "0.5"

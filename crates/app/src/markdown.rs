@@ -12,7 +12,7 @@ use gpui::{
     StatefulInteractiveElement, StyleRefinement, Styled, Subscription, Task, Window, div, px,
     relative, rems,
 };
-use gpui_base::text::CodeBlock;
+use gpui_base::text::{CodeBlock, MarkdownExtensions};
 use gpui_base::{TextView, TextViewStyle};
 use me_syntax::{Syntax, language_by_name};
 use me_text::Rope;
@@ -162,6 +162,19 @@ fn image_source(base: Option<PathBuf>) -> impl Fn(&SharedUri) -> ImageSource + S
     }
 }
 
+/// Mermaid fences become diagrams. Rebuilt each frame; the parser revision
+/// keeps the parsed document until the theme (which the diagrams bake in)
+/// changes.
+fn markdown_extensions(palette: &Palette) -> MarkdownExtensions {
+    let p = palette.clone();
+    MarkdownExtensions::default()
+        .block_parser(move |node, _| crate::mermaid::parse(node, &p))
+        .block_renderer(crate::mermaid::NODE_NAME, |node, _, cx| {
+            crate::mermaid::element(node, cx)
+        })
+        .parser_revision(if palette.is_dark { 2 } else { 1 })
+}
+
 fn text_style(palette: &Palette, body: f32) -> TextViewStyle {
     let heading_scale = |level: u8| match level {
         1 => 2.,
@@ -235,6 +248,7 @@ impl Render for MarkdownPreview {
         )
         .style(text_style(&palette, body))
         .shared_code_block_highlighter(highlighter)
+        .markdown_extensions(markdown_extensions(&palette))
         .image_source(image_source(base))
         .selectable(true)
         .on_link_click(move |url, _, window, cx| {

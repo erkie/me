@@ -12,6 +12,8 @@ mod goto_line;
 mod ipc;
 mod markdown;
 mod menus;
+mod mermaid;
+mod palette;
 mod platform;
 mod search_panel;
 mod settings;

@@ -217,8 +217,10 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-g", GoToLine, workspace),
         KeyBinding::new("secondary-e", UseSelectionForFind, editor),
         // Workspace
-        KeyBinding::new("secondary-t", ToggleFileFinder, workspace),
+        // When an action has several bindings, the last one is shown in
+        // menus and the command palette.
         KeyBinding::new("secondary-p", ToggleFileFinder, workspace),
+        KeyBinding::new("secondary-t", ToggleFileFinder, workspace),
         KeyBinding::new("secondary-shift-f", ToggleProjectSearch, workspace),
         KeyBinding::new("secondary-f", Find, workspace),
         KeyBinding::new("f3", FindNext, workspace),
@@ -245,8 +247,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-alt-r", RevealInFinder, workspace),
         KeyBinding::new("secondary-alt-c", CopyPath, workspace),
         KeyBinding::new("secondary-alt-shift-c", CopyRelativePath, workspace),
-        KeyBinding::new("secondary-k", ToggleCommandPalette, workspace),
         KeyBinding::new("secondary-shift-p", ToggleCommandPalette, workspace),
+        KeyBinding::new("secondary-k", ToggleCommandPalette, workspace),
         KeyBinding::new("alt-z", ToggleWordWrap, workspace),
         // App
         KeyBinding::new("secondary-o", Open, None),
@@ -255,9 +257,9 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-shift-n", NewWindow, None),
         KeyBinding::new("secondary-shift-w", CloseWindow, None),
         KeyBinding::new("secondary-q", Quit, None),
-        KeyBinding::new("secondary-=", IncreaseFontSize, None),
         KeyBinding::new("secondary-+", IncreaseFontSize, None),
         KeyBinding::new("secondary-shift-=", IncreaseFontSize, None),
+        KeyBinding::new("secondary-=", IncreaseFontSize, None),
         KeyBinding::new("secondary--", DecreaseFontSize, None),
         KeyBinding::new("secondary-0", ResetFontSize, None),
     ]);
