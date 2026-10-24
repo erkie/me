@@ -1084,15 +1084,26 @@ impl Workspace {
             return;
         };
         self.pending_definition = Some(cx.spawn_in(window, async move |this, cx| {
-            let prepared = wait_for_server(&this, prepared, name, cx).await;
+            let prepared = wait_for_server(&this, prepared, name.clone(), cx).await;
             this.update_in(cx, |this, window, cx| {
                 this.pending_definition = None;
                 match prepared {
                     Some(Ok(Some((range, old)))) => {
                         this.open_rename(editor, range, old, window, cx)
                     }
+                    // The server doesn't rename this kind of thing (Ruby LSP
+                    // only renames constants): edit it in this file.
+                    Some(Ok(None)) => {
+                        editor.update(cx, |editor, cx| editor.select_all_occurrences(cx));
+                        this.flash_message(
+                            format!(
+                                "{name} can't rename {word}: editing every {word} in this file"
+                            ),
+                            cx,
+                        );
+                    }
                     Some(Err(err)) => this.flash_message(format!("Can't rename {word}: {err}"), cx),
-                    _ => this.flash_message(format!("Can't rename {word}"), cx),
+                    None => this.flash_message(format!("Can't rename {word}"), cx),
                 }
             })
             .ok();
@@ -1694,6 +1705,16 @@ impl Workspace {
                     this.go_to_definition(editor.clone(), *pos, window, cx)
                 }
                 EditorEvent::Hover { pos, id } => this.request_hover(editor.clone(), *pos, *id, cx),
+                EditorEvent::OpenFile { path, line } => {
+                    let target = Location {
+                        path: path.clone(),
+                        name: Arc::from(""),
+                        kind: SymbolKind::Other,
+                        line: line.map_or(0, |l| l.saturating_sub(1) as usize),
+                        col: 0,
+                    };
+                    this.jump_to(target, window, cx);
+                }
             },
         )];
         Tab {

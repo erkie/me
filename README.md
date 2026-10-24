@@ -85,7 +85,8 @@ some-command | me -
 Me starts a language server the first time you open a file of its
 language in a folder, and stops it when the window closes (or ten minutes
 after its last file closed). It looks for the server on your login shell's
-`PATH`, plus `~/.cargo/bin`, `~/go/bin`, `~/.local/bin` and Homebrew:
+`PATH`, plus `~/.cargo/bin`, `~/go/bin`, `~/.local/bin`, Homebrew, and the
+rbenv, asdf, mise, pyenv and nodenv shims:
 
 | Languages | Server (first one installed wins) |
 | --- | --- |
@@ -94,7 +95,8 @@ after its last file closed). It looks for the server on your login shell's
 | TypeScript, JavaScript | `typescript-language-server`, `vtsls` |
 | Python | `pyright-langserver`, `basedpyright-langserver`, `pylsp`, `jedi-language-server` |
 | C, C++ | `clangd` |
-| Java, Ruby, Swift, Lua, Shell | `jdtls`, `ruby-lsp`/`solargraph`, `sourcekit-lsp`, `lua-language-server`, `bash-language-server` |
+| Ruby | `ruby-lsp` (`gem install ruby-lsp`; RuboCop too if it's in your Gemfile), `solargraph` |
+| Java, Swift, Lua, Shell | `jdtls`, `sourcekit-lsp`, `lua-language-server`, `bash-language-server` |
 
 The status bar shows the server and what it's doing; click it to restart
 or stop it. Next to the cursor position it counts the folder's errors and

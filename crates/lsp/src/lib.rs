@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 pub use lsp_types as types;
 use lsp_types::{Position, Uri};
 use ropey::Rope;
-pub use server::{Event, Server, Status};
+pub use server::{Event, Pulled, Server, Status};
 
 /// How a server counts columns: UTF-16 code units (the LSP default) or
 /// bytes, if it agreed to UTF-8.
@@ -32,6 +32,24 @@ pub fn uri_from_path(path: &Path) -> Option<Uri> {
 
 pub fn path_from_uri(uri: &Uri) -> Option<PathBuf> {
     url::Url::parse(uri.as_str()).ok()?.to_file_path().ok()
+}
+
+/// The file and 1-based line of a `file://` link, as servers put them in
+/// hovers: `file:///a/b.rb#L2,1-13,3`, `#L12`, `#12`, `#L12:4`.
+pub fn file_link(link: &str) -> Option<(PathBuf, Option<u32>)> {
+    let mut url = url::Url::parse(link)
+        .ok()
+        .filter(|u| u.scheme() == "file")?;
+    let line = url.fragment().and_then(|fragment| {
+        let digits: String = fragment
+            .trim_start_matches('L')
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        digits.parse().ok()
+    });
+    url.set_fragment(None);
+    Some((url.to_file_path().ok()?, line))
 }
 
 /// The LSP position of char offset `offset`.
@@ -209,6 +227,19 @@ mod tests {
         apply(&mut server, range, &text, Encoding::Utf8);
         assert_eq!(server, new);
         assert_eq!(range.start, Position::new(0, 1));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_links() {
+        let link = |s: &str| file_link(s).map(|(p, l)| (p.display().to_string(), l));
+        assert_eq!(
+            link("file:///code/my%20app/shapes.rb#L2,1-13,3"),
+            Some(("/code/my app/shapes.rb".into(), Some(2)))
+        );
+        assert_eq!(link("file:///a.py#12"), Some(("/a.py".into(), Some(12))));
+        assert_eq!(link("file:///a.rs"), Some(("/a.rs".into(), None)));
+        assert_eq!(link("https://docs.rs/serde"), None);
     }
 
     #[test]

@@ -25,7 +25,21 @@ use crate::{Encoding, uri_from_path};
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
     Status(Status),
+    /// Problems the server pushed for a file.
     Diagnostics(lsp::PublishDiagnosticsParams),
+    /// Problems pulled earlier are out of date: pull them again.
+    DiagnosticsRefresh,
+}
+
+/// The answer to a `textDocument/diagnostic` pull.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Pulled {
+    Full {
+        result_id: Option<String>,
+        items: Vec<lsp::Diagnostic>,
+    },
+    /// Same as last time (the `result_id` that was passed).
+    Unchanged { result_id: String },
 }
 
 /// What a server is doing, for the status bar.
@@ -327,6 +341,7 @@ impl Server {
                     "configuration": true,
                     "workspaceFolders": true,
                     "workspaceEdit": { "documentChanges": true },
+                    "diagnostics": { "refreshSupport": true },
                 },
                 "textDocument": {
                     "synchronization": { "didSave": true },
@@ -336,6 +351,7 @@ impl Server {
                         "versionSupport": true,
                         "tagSupport": { "valueSet": [1, 2] },
                     },
+                    "diagnostic": { "dynamicRegistration": false },
                     "definition": { "linkSupport": true },
                     "declaration": { "linkSupport": true },
                     "typeDefinition": { "linkSupport": true },
@@ -423,6 +439,41 @@ impl Server {
             new,
             incremental,
         });
+    }
+
+    /// Asks for a file's problems (servers with a `diagnosticProvider`
+    /// answer pulls instead of, or as well as, pushing).
+    pub fn pull_diagnostics(
+        &self,
+        uri: &lsp::Uri,
+        previous_result_id: Option<String>,
+    ) -> impl Future<Output = anyhow::Result<Pulled>> + use<> {
+        let response = self.request_raw(
+            "textDocument/diagnostic",
+            json!({
+                "textDocument": { "uri": uri },
+                "previousResultId": previous_result_id,
+            }),
+        );
+        async move {
+            let report = response.await?;
+            let result_id = report
+                .get("resultId")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            match (report.get("kind").and_then(Value::as_str), result_id) {
+                (Some("unchanged"), Some(result_id)) => Ok(Pulled::Unchanged { result_id }),
+                (_, result_id) => Ok(Pulled::Full {
+                    result_id,
+                    items: serde_json::from_value(
+                        report
+                            .get("items")
+                            .cloned()
+                            .unwrap_or(Value::Array(Vec::new())),
+                    )?,
+                }),
+            }
+        }
     }
 
     pub fn did_save(&self, uri: &lsp::Uri) {
@@ -561,12 +612,15 @@ fn handle_message(
                     Ok(Value::Array(vec![Value::Null; items]))
                 }
                 "workspace/applyEdit" => Ok(json!({ "applied": false })),
+                "workspace/diagnostic/refresh" => {
+                    let _ = events.unbounded_send(Event::DiagnosticsRefresh);
+                    Ok(Value::Null)
+                }
                 "window/workDoneProgress/create"
                 | "client/registerCapability"
                 | "client/unregisterCapability"
                 | "window/showMessageRequest"
                 | "window/showDocument"
-                | "workspace/diagnostic/refresh"
                 | "workspace/semanticTokens/refresh"
                 | "workspace/inlayHint/refresh"
                 | "workspace/codeLens/refresh" => Ok(Value::Null),
@@ -727,6 +781,22 @@ mod tests {
             fake.send(json!({ "jsonrpc": "2.0", "id": definition["id"], "result": [{
                 "uri": "file:///tmp/a.rs",
                 "range": { "start": { "line": 4, "character": 2 }, "end": { "line": 4, "character": 6 } } }] }));
+
+            // Pulled diagnostics: unchanged since the last result, then new.
+            let pull = fake.recv();
+            assert_eq!(pull["method"], "textDocument/diagnostic");
+            assert_eq!(pull["params"]["previousResultId"], "r1");
+            fake.send(json!({ "jsonrpc": "2.0", "id": pull["id"],
+                "result": { "kind": "unchanged", "resultId": "r1" } }));
+            let pull = fake.recv();
+            fake.send(json!({ "jsonrpc": "2.0", "id": pull["id"], "result": { "kind": "full",
+                "resultId": "r2", "items": [{ "message": "pulled",
+                "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 2 } } }] } }));
+            // The server asks for a fresh pull.
+            fake.send(
+                json!({ "jsonrpc": "2.0", "id": 9, "method": "workspace/diagnostic/refresh" }),
+            );
+            assert_eq!(fake.recv()["id"], 9);
             fake
         });
 
@@ -759,11 +829,30 @@ mod tests {
             other => panic!("unexpected {other:?}"),
         }
 
+        let uri: lsp::Uri = "file:///tmp/main.rs".parse().unwrap();
+        let pull = |previous: Option<&str>| {
+            futures::executor::block_on(server.pull_diagnostics(&uri, previous.map(Into::into)))
+                .unwrap()
+        };
+        assert_eq!(
+            pull(Some("r1")),
+            Pulled::Unchanged {
+                result_id: "r1".into()
+            }
+        );
+        match pull(None) {
+            Pulled::Full { result_id, items } => {
+                assert_eq!(result_id.as_deref(), Some("r2"));
+                assert_eq!(items[0].message, "pulled");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+
         let events: Vec<Event> = futures::executor::block_on(async {
             let mut seen = Vec::new();
             while let Some(s) = status.next().await {
                 seen.push(s);
-                if seen.len() == 4 {
+                if seen.len() == 5 {
                     break;
                 }
             }
@@ -781,7 +870,8 @@ mod tests {
             events[2..],
             [
                 Event::Status(Status::Busy("Indexing 10%".into())),
-                Event::Status(Status::Ready)
+                Event::Status(Status::Ready),
+                Event::DiagnosticsRefresh,
             ]
         );
 

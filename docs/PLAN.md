@@ -394,8 +394,12 @@ their whole job, and they are what VS Code and Zed run too. Two tiers:
    falling back to tier 1 when there's no server, it's starting, or it
    takes over 4 s. The status bar shows `$/progress` and offers
    restart/stop.
-3. **Hover, diagnostics and rename** (done). Problems from
-   `publishDiagnostics` are wavy underlines (and colored line numbers),
+3. **Hover, diagnostics and rename** (done). Problems the server pushes
+   (`publishDiagnostics`) or answers when asked (`textDocument/diagnostic`
+   after each sync and on `workspace/diagnostic/refresh`, retried with
+   backoff when a busy server cancels; Ruby LSP only pulls, rust-analyzer
+   pulls its own and pushes `cargo check`'s) are merged per file and shown
+   as wavy underlines (and colored line numbers),
    kept in byte offsets that move with each edit until the server sends
    new ones; stale versions are dropped. The status bar counts errors and
    warnings in the folder (click, or Cmd+Shift+M, for the list); F8 /
@@ -404,8 +408,10 @@ their whole job, and they are what VS Code and Zed run too. Two tiers:
    markdown, code highlighted with our grammars. F2 renames with
    `prepareRename` and `rename`: open files get one undoable edit (saved
    if they had no other changes, like VS Code), closed files are edited on
-   disk and announced with `didChangeWatchedFiles`. Without a server, F2
-   puts a cursor on each occurrence in the file.
+   disk and announced with `didChangeWatchedFiles`. Without a server, or
+   when it won't rename something (Ruby LSP renames only constants), F2
+   puts a cursor on each occurrence in the file. `file://` links in hovers
+   open in the editor.
 
 Language servers can use a lot of memory (rust-analyzer: gigabytes), so
 they only run while a window has files of their language open and stop

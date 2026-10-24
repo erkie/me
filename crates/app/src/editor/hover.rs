@@ -107,6 +107,7 @@ pub fn popover(
     let palette = theme::palette(cx).clone();
     let mono = theme::fonts(cx).mono.clone();
     let view = view.clone();
+    let link_view = view.downgrade();
     let diagnostics = hover.diagnostics.iter().map(|d| {
         let mut detail = d.source.clone().unwrap_or_default();
         if let Some(code) = &d.code {
@@ -149,7 +150,22 @@ pub fn popover(
             // label would sit on top of them.
             .code_block_actions(|_, _, _| div())
             .selectable(true)
-            .on_link_click(|url, _, _, cx| cx.open_url(url))
+            // Links into the project (Ruby LSP's "Definitions: shapes.rb")
+            // open here; others in the browser.
+            .on_link_click(move |url, _, window, cx| {
+                let Some((path, line)) = me_lsp::file_link(url) else {
+                    cx.open_url(url);
+                    return;
+                };
+                let view = link_view.clone();
+                window.defer(cx, move |_, cx| {
+                    view.update(cx, |view, cx| {
+                        view.hide_hover(cx);
+                        cx.emit(super::EditorEvent::OpenFile { path, line });
+                    })
+                    .ok();
+                });
+            })
     });
     let has_diagnostics = !hover.diagnostics.is_empty();
     div()

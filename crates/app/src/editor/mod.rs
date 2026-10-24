@@ -52,6 +52,12 @@ pub enum EditorEvent {
         pos: usize,
         id: u64,
     },
+    /// A link to a file was clicked (in a hover): open it at this 1-based
+    /// line.
+    OpenFile {
+        path: PathBuf,
+        line: Option<u32>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

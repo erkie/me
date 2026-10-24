@@ -20,7 +20,7 @@ use futures::channel::mpsc;
 use gpui::{App, Context, Entity, EntityId, SharedString, Subscription, Task};
 use me_lsp::registry::{self, Group};
 use me_lsp::types as lsp;
-use me_lsp::{Encoding, Event, Server, Status};
+use me_lsp::{Encoding, Event, Pulled, Server, Status};
 use me_text::Rope;
 
 use crate::editor::diagnostics::{Diagnostic, Severity};
@@ -34,6 +34,11 @@ const SYNC_DELAY: Duration = Duration::from_millis(250);
 const IDLE_STOP: Duration = Duration::from_secs(10 * 60);
 /// Buffers bigger than this aren't sent to servers.
 const MAX_SYNC_SIZE: usize = 4 * 1024 * 1024;
+/// How long after a sync problems are pulled (servers that answer pulls).
+const PULL_DELAY: Duration = Duration::from_millis(100);
+/// Pulls a busy server cancelled are asked again, at most this many times
+/// in a row (waiting longer each time).
+const MAX_PULL_RETRIES: u32 = 8;
 
 /// A place a server pointed at, ready to open.
 #[derive(Clone, Debug)]
@@ -84,11 +89,32 @@ pub struct Rename {
     pub encoding: Encoding,
 }
 
-/// The diagnostics a server last sent for a file.
+/// The problems known for a file: what the server last pushed, and what
+/// it last answered to a pull (servers may do both: rust-analyzer pushes
+/// `cargo check` results and answers pulls with its own).
 struct Published {
     /// The path as the server gave it.
     path: PathBuf,
-    items: Vec<lsp::Diagnostic>,
+    pushed: Vec<lsp::Diagnostic>,
+    pulled: Vec<lsp::Diagnostic>,
+}
+
+impl Published {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            pushed: Vec::new(),
+            pulled: Vec::new(),
+        }
+    }
+
+    fn items(&self) -> impl Iterator<Item = &lsp::Diagnostic> {
+        self.pushed.iter().chain(&self.pulled)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.pushed.is_empty() && self.pulled.is_empty()
+    }
 }
 
 struct Entry {
@@ -103,6 +129,12 @@ struct Entry {
     off: bool,
     _task: Option<Task<()>>,
     idle: Option<Task<()>>,
+    /// Pulling problems for the group's buffers, a moment after a sync.
+    pull_task: Option<Task<()>>,
+    /// The server asked for everything to be pulled again.
+    pull_all: bool,
+    /// Pulls that failed in a row (the server was busy).
+    pull_failures: u32,
 }
 
 /// What a buffer is to its server.
@@ -123,6 +155,10 @@ struct Doc {
     version: i32,
     /// The text the server has and its revision; `None` until opened there.
     sent: Option<(u64, Rope)>,
+    /// The version problems were last pulled for, and the server's id for
+    /// that answer (it can then reply "unchanged").
+    pulled_version: Option<i32>,
+    result_id: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -187,6 +223,8 @@ impl LanguageServers {
                 target: None,
                 version: 0,
                 sent: None,
+                pulled_version: None,
+                result_id: None,
                 _subscriptions: subscriptions,
             },
         );
@@ -197,6 +235,9 @@ impl LanguageServers {
         let Some(doc) = self.docs.remove(&id) else {
             return;
         };
+        if let Some(target) = &doc.target {
+            self.forget_pulled(&target.canonical);
+        }
         if let Some(target) = doc.target {
             if doc.sent.is_some()
                 && let Some(server) = self.live_server(target.group)
@@ -238,6 +279,7 @@ impl LanguageServers {
             if let Some(server) = self.live_server(old.group) {
                 server.did_close(&old.uri);
             }
+            self.forget_pulled(&old.canonical);
             self.schedule_idle_stop(old.group, cx);
         }
         if let Some(target) = target
@@ -282,6 +324,9 @@ impl LanguageServers {
             off: settings.enabled == Some(false),
             _task: None,
             idle: None,
+            pull_task: None,
+            pull_all: false,
+            pull_failures: 0,
         };
         if entry.off {
             self.servers.insert(group.key, entry);
@@ -394,6 +439,12 @@ impl LanguageServers {
                             }
                         }
                         Event::Diagnostics(params) => this.publish(key, params, cx),
+                        Event::DiagnosticsRefresh => {
+                            if let Some(entry) = this.servers.get_mut(key) {
+                                entry.pull_all = true;
+                            }
+                            this.schedule_pull(key, cx);
+                        }
                     }
                     cx.notify();
                 });
@@ -473,10 +524,15 @@ impl LanguageServers {
         let doc = self.docs.get_mut(&id).unwrap();
         doc.version += 1;
         match doc.sent.take() {
-            None => server.did_open(&target.uri, target.language_id, doc.version, rope.clone()),
+            None => {
+                doc.pulled_version = None;
+                doc.result_id = None;
+                server.did_open(&target.uri, target.language_id, doc.version, rope.clone())
+            }
             Some((_, old)) => server.did_change(&target.uri, doc.version, Some(old), rope.clone()),
         }
         doc.sent = Some((revision, rope));
+        self.schedule_pull(target.group, cx);
     }
 
     // ---------------------------------------------------------------------
@@ -497,16 +553,13 @@ impl LanguageServers {
             return;
         }
         let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-        if params.diagnostics.is_empty() {
+        let published = self
+            .diagnostics
+            .entry(canonical.clone())
+            .or_insert_with(|| Published::new(path));
+        published.pushed = params.diagnostics;
+        if published.is_empty() {
             self.diagnostics.remove(&canonical);
-        } else {
-            self.diagnostics.insert(
-                canonical.clone(),
-                Published {
-                    path,
-                    items: params.diagnostics,
-                },
-            );
         }
         let ids: Vec<EntityId> = self
             .docs
@@ -525,6 +578,143 @@ impl LanguageServers {
         }
     }
 
+    /// Pulls problems for the group's buffers that changed (all of them if
+    /// the server says files affect each other, or asked for a refresh), a
+    /// moment from now. Only for servers that answer pulls.
+    fn schedule_pull(&mut self, group: &'static str, cx: &mut Context<Self>) {
+        self.schedule_pull_in(group, PULL_DELAY, cx);
+    }
+
+    fn schedule_pull_in(&mut self, group: &'static str, delay: Duration, cx: &mut Context<Self>) {
+        if !self
+            .live_server(group)
+            .is_some_and(|s| s.supports("diagnosticProvider"))
+        {
+            return;
+        }
+        let Some(entry) = self.servers.get_mut(group) else {
+            return;
+        };
+        entry.pull_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(delay).await;
+            let Ok(pulls) = this.update(cx, |this, _| this.start_pulls(group)) else {
+                return;
+            };
+            let mut failed = false;
+            for (id, version, pull) in pulls {
+                let result = pull.await;
+                match this.update(cx, |this, cx| this.finish_pull(id, version, result, cx)) {
+                    Ok(ok) => failed |= !ok,
+                    Err(_) => return,
+                }
+            }
+            this.update(cx, |this, cx| this.after_pulls(group, failed, cx))
+                .ok();
+        }));
+    }
+
+    /// A busy server cancels pulls (it's indexing, or its state changed)
+    /// and expects them to be asked again: retry, waiting longer each time.
+    fn after_pulls(&mut self, group: &'static str, failed: bool, cx: &mut Context<Self>) {
+        let Some(entry) = self.servers.get_mut(group) else {
+            return;
+        };
+        if !failed {
+            entry.pull_failures = 0;
+            return;
+        }
+        entry.pull_failures += 1;
+        let failures = entry.pull_failures;
+        if failures <= MAX_PULL_RETRIES {
+            entry.pull_all = true;
+            let delay = Duration::from_millis(250 << failures.min(5));
+            self.schedule_pull_in(group, delay, cx);
+        }
+    }
+
+    /// Sends the pulls for a group: (buffer, version, answer).
+    #[allow(clippy::type_complexity)]
+    fn start_pulls(
+        &mut self,
+        group: &'static str,
+    ) -> Vec<(
+        EntityId,
+        i32,
+        std::pin::Pin<Box<dyn Future<Output = anyhow::Result<Pulled>>>>,
+    )> {
+        let Some(server) = self.live_server(group) else {
+            return Vec::new();
+        };
+        let everything = self
+            .servers
+            .get_mut(group)
+            .map(|e| std::mem::take(&mut e.pull_all))
+            .unwrap_or(false)
+            || server.supports_at("/diagnosticProvider/interFileDependencies");
+        self.docs
+            .iter()
+            .filter(|(_, d)| d.sent.is_some())
+            .filter(|(_, d)| everything || d.pulled_version != Some(d.version))
+            .filter_map(|(id, d)| {
+                let target = d.target.as_ref().filter(|t| t.group == group)?;
+                let pull = server.pull_diagnostics(&target.uri, d.result_id.clone());
+                Some((*id, d.version, Box::pin(pull) as _))
+            })
+            .collect()
+    }
+
+    /// Keeps a pull's answer, unless the buffer changed since it was asked
+    /// (a newer pull is on its way). False if the server didn't answer.
+    fn finish_pull(
+        &mut self,
+        id: EntityId,
+        version: i32,
+        result: anyhow::Result<Pulled>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Ok(result) = result else { return false };
+        let Some(doc) = self.docs.get_mut(&id).filter(|d| d.version == version) else {
+            return true;
+        };
+        let Some(target) = doc.target.clone() else {
+            return true;
+        };
+        doc.pulled_version = Some(version);
+        let items = match result {
+            Pulled::Unchanged { result_id } => {
+                doc.result_id = Some(result_id);
+                return true;
+            }
+            Pulled::Full { result_id, items } => {
+                doc.result_id = result_id;
+                items
+            }
+        };
+        let published = self
+            .diagnostics
+            .entry(target.canonical.clone())
+            .or_insert_with(|| Published::new(target.path.clone()));
+        published.pulled = items;
+        if published.is_empty() {
+            self.diagnostics.remove(&target.canonical);
+        }
+        let ids: Vec<EntityId> = self
+            .docs
+            .iter()
+            .filter(|(_, d)| {
+                d.target
+                    .as_ref()
+                    .is_some_and(|t| t.canonical == target.canonical)
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ids {
+            self.push_diagnostics(id, cx);
+        }
+        cx.notify();
+        true
+    }
+
     /// Shows a buffer the problems known for its file.
     fn push_diagnostics(&self, id: EntityId, cx: &mut App) {
         let Some(doc) = self.docs.get(&id) else {
@@ -536,7 +726,7 @@ impl LanguageServers {
         let target = doc.target.as_ref();
         let items = target
             .and_then(|t| self.diagnostics.get(&t.canonical))
-            .map(|p| p.items.clone())
+            .map(|p| p.items().cloned().collect::<Vec<_>>())
             .unwrap_or_default();
         let encoding = target
             .and_then(|t| self.live_server(t.group))
@@ -552,6 +742,24 @@ impl LanguageServers {
                 .collect();
             editor.set_diagnostics(diagnostics, cx);
         });
+    }
+
+    /// Drops pulled problems for a file once no buffer has it open (pulls
+    /// are only for open files).
+    fn forget_pulled(&mut self, canonical: &Path) {
+        let still_open = self
+            .docs
+            .values()
+            .any(|d| d.target.as_ref().is_some_and(|t| t.canonical == canonical));
+        if still_open {
+            return;
+        }
+        if let Some(published) = self.diagnostics.get_mut(canonical) {
+            published.pulled.clear();
+            if published.is_empty() {
+                self.diagnostics.remove(canonical);
+            }
+        }
     }
 
     /// Forgets a server's problems (it stopped).
@@ -613,7 +821,7 @@ impl LanguageServers {
             if covered.contains(canonical) {
                 continue;
             }
-            for d in &published.items {
+            for d in published.items() {
                 let severity = severity(d.severity);
                 if severity == Severity::Hint {
                     continue;
@@ -634,7 +842,7 @@ impl LanguageServers {
     /// Errors and warnings in the folder.
     pub fn problem_counts(&self) -> (usize, usize) {
         let mut counts = (0, 0);
-        for d in self.diagnostics.values().flat_map(|p| &p.items) {
+        for d in self.diagnostics.values().flat_map(Published::items) {
             match severity(d.severity) {
                 Severity::Error => counts.0 += 1,
                 Severity::Warning => counts.1 += 1,

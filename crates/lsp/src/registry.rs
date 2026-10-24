@@ -125,7 +125,9 @@ pub fn group_for(language: &str) -> Option<(&'static Group, &'static str)> {
 
 /// The `PATH` to look for servers in, and to start them with: the login
 /// shell's (apps launched from the Dock or Finder get a bare one), this
-/// process's, and the usual install locations.
+/// process's, and the usual install locations, including version managers'
+/// shims (rbenv, asdf, mise, pyenv, nodenv), which pick the version for the
+/// folder the server runs in.
 pub fn search_path() -> &'static OsString {
     static PATH: OnceLock<OsString> = OnceLock::new();
     PATH.get_or_init(|| {
@@ -145,6 +147,12 @@ pub fn search_path() -> &'static OsString {
                 ".volta/bin",
                 ".npm-global/bin",
                 ".deno/bin",
+                ".rbenv/shims",
+                ".asdf/shims",
+                ".local/share/mise/shims",
+                ".pyenv/shims",
+                ".nodenv/shims",
+                ".gem/bin",
             ] {
                 dirs.push(home.join(dir));
             }
