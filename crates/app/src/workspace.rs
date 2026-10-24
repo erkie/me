@@ -1,13 +1,14 @@
 //! One window: sidebar (files or project search), tabs, the active editor or
 //! markdown preview, the find bar, the Cmd+T finder and a status bar.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use gpui::{
     AnyElement, App, AppContext, ClickEvent, Context, CursorStyle, Entity, FocusHandle, Focusable,
     InteractiveElement, IntoElement, KeyContext, MouseButton, MouseDownEvent, MouseMoveEvent,
     ParentElement, PromptLevel, Render, SharedString, StatefulInteractiveElement, Styled,
-    Subscription, Window, div, prelude::FluentBuilder, px, svg,
+    Subscription, Task, Window, div, prelude::FluentBuilder, px, svg,
 };
 
 use crate::actions::*;
@@ -21,6 +22,7 @@ use crate::image_preview::{ImagePreview, is_image, is_svg};
 use crate::markdown::{MarkdownEvent, MarkdownPreview, is_markdown};
 use crate::palette::{CommandPalette, PaletteEvent};
 use crate::search_panel::{SearchPanel, SearchPanelEvent};
+use crate::session;
 use crate::theme;
 
 /// Height of the title/tab bar. On macOS the traffic lights sit in it.
@@ -28,6 +30,8 @@ pub const TITLE_BAR_HEIGHT: f32 = if cfg!(target_os = "macos") { 38. } else { 34
 const STATUS_BAR_HEIGHT: f32 = 26.;
 const TAB_TEXT_SIZE: f32 = 13.5;
 const MIN_SIDEBAR: f32 = 160.;
+/// How long after the last edit the session is saved.
+const SESSION_SAVE_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
 const MAX_SIDEBAR: f32 = 600.;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -157,8 +161,14 @@ pub struct Workspace {
     closed: Vec<PathBuf>,
     recent: Vec<PathBuf>,
     should_move_window: bool,
-    /// The user already agreed to discard unsaved changes on close.
-    pub close_confirmed: bool,
+    /// Where this window's session is kept (see [`session`]).
+    pub session_key: String,
+    /// The document revision of each tab's buffer last written to the
+    /// session, so unchanged buffers aren't written again.
+    written_revisions: HashMap<u64, u64>,
+    save_task: Option<Task<()>>,
+    /// The window's frame when last seen, for saving after it closed.
+    last_bounds: Option<[f32; 4]>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -197,6 +207,10 @@ impl Workspace {
         subscriptions.push(cx.observe_window_activation(window, |this, window, cx| {
             if window.is_window_active() {
                 this.on_window_activated(cx);
+            } else {
+                // Leaving the window (or the app): keep the session current
+                // in case the app doesn't get to quit cleanly.
+                this.save_session(true, false, Some(window), cx);
             }
         }));
         let mut this = Self {
@@ -222,7 +236,13 @@ impl Workspace {
             closed: Vec::new(),
             recent: Vec::new(),
             should_move_window: false,
-            close_confirmed: false,
+            session_key: match &root {
+                Some(root) => session::key_for_root(root),
+                None => session::new_scratch_key(),
+            },
+            written_revisions: HashMap::new(),
+            save_task: None,
+            last_bounds: None,
             _subscriptions: subscriptions,
         };
         if let Some(root) = root {
@@ -240,6 +260,10 @@ impl Workspace {
     }
 
     pub fn set_root(&mut self, root: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if session::is_scratch(&self.session_key) {
+            session::delete(&self.session_key);
+        }
+        self.session_key = session::key_for_root(&root);
         let tree = cx.new(|cx| FileTree::new(root.clone(), cx));
         self._subscriptions.push(cx.subscribe_in(
             &tree,
@@ -329,13 +353,6 @@ impl Workspace {
 
     pub fn tab_ids(&self) -> Vec<u64> {
         self.tabs.iter().map(|t| t.id).collect()
-    }
-
-    pub fn dirty_count(&self, cx: &App) -> usize {
-        self.tabs
-            .iter()
-            .filter(|t| t.editor.read(cx).is_dirty())
-            .count()
     }
 
     fn active_tab(&self) -> Option<&Tab> {
@@ -485,6 +502,172 @@ impl Workspace {
     }
 
     // ---------------------------------------------------------------------
+    // Sessions
+    // ---------------------------------------------------------------------
+
+    /// This window's session; buffers whose text changed since they were
+    /// last written are included.
+    fn snapshot(&mut self, open: bool, window: Option<&Window>, cx: &App) -> session::Snapshot {
+        let mut tabs = Vec::new();
+        let mut buffers = Vec::new();
+        let mut active = None;
+        for (ix, tab) in self.tabs.iter().enumerate() {
+            // `me -w` tabs belong to the process waiting on them.
+            if app_state::is_waited(tab.id, cx) {
+                continue;
+            }
+            let editor = tab.editor.read(cx);
+            let unsaved = editor.unsaved_text().map(|rope| {
+                let name = format!("buffer-{}.txt", tab.id);
+                let revision = editor.revision();
+                if self.written_revisions.insert(tab.id, revision) != Some(revision) {
+                    buffers.push((name.clone(), rope));
+                }
+                name
+            });
+            if editor.path().is_none() && unsaved.is_none() {
+                continue;
+            }
+            if Some(ix) == self.active {
+                active = Some(tabs.len());
+            }
+            let (cursor, scroll) = editor.view_state();
+            tabs.push(session::TabSession {
+                path: editor.path().map(Path::to_path_buf),
+                unsaved,
+                pinned: tab.pinned,
+                show_preview: tab.show_preview,
+                cursor,
+                scroll,
+            });
+        }
+        if let Some(window) = window
+            && let gpui::WindowBounds::Windowed(b) = window.window_bounds()
+        {
+            self.last_bounds = Some([
+                f32::from(b.origin.x),
+                f32::from(b.origin.y),
+                f32::from(b.size.width),
+                f32::from(b.size.height),
+            ]);
+        }
+        session::Snapshot {
+            session: session::WindowSession {
+                root: self.root.clone(),
+                open,
+                tabs,
+                active,
+                sidebar_visible: self.sidebar_visible,
+                sidebar_width: self.sidebar_width,
+                bounds: self.last_bounds,
+            },
+            buffers,
+        }
+    }
+
+    /// Writes this window's session. `open` says whether the window should
+    /// come back on the next launch. A window without a folder and nothing
+    /// worth keeping has its session removed instead.
+    pub fn save_session(
+        &mut self,
+        open: bool,
+        sync: bool,
+        window: Option<&Window>,
+        cx: &mut Context<Self>,
+    ) {
+        let snapshot = self.snapshot(open, window, cx);
+        let key = self.session_key.clone();
+        if self.root.is_none() && snapshot.session.tabs.is_empty() {
+            self.save_task = None;
+            session::delete(&key);
+            return;
+        }
+        let write = move || {
+            if let Err(err) = session::write(&key, &snapshot) {
+                eprintln!("me: could not save the session: {err}");
+            }
+        };
+        if sync {
+            self.save_task = None;
+            write();
+        } else {
+            self.save_task = Some(cx.background_executor().spawn(async move { write() }));
+        }
+    }
+
+    /// Saves the session a few seconds after the last edit.
+    fn schedule_session_save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_task = Some(cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(SESSION_SAVE_DELAY).await;
+            this.update_in(cx, |this, window, cx| {
+                this.save_session(true, false, Some(window), cx)
+            })
+            .ok();
+        }));
+    }
+
+    /// Reopens a saved session's tabs, with their unsaved text, cursors and
+    /// scroll positions.
+    pub fn restore_session(
+        &mut self,
+        saved: session::WindowSession,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.sidebar_visible = saved.sidebar_visible;
+        self.sidebar_width = saved.sidebar_width.clamp(MIN_SIDEBAR, MAX_SIDEBAR);
+        let mut active_id = None;
+        for (ix, tab) in saved.tabs.into_iter().enumerate() {
+            let text = tab
+                .unsaved
+                .as_deref()
+                .and_then(|name| session::read_buffer(&self.session_key, name));
+            let id = match &tab.path {
+                // A file deleted since, with nothing unsaved: let it go.
+                Some(path) if !path.exists() && text.is_none() => continue,
+                Some(path) => self.open_path(
+                    path.clone(),
+                    OpenOptions {
+                        pin: true,
+                        keep_focus: true,
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                ),
+                None if text.is_some() => self.open_text("", window, cx),
+                None => continue,
+            };
+            let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else {
+                continue;
+            };
+            t.pinned = tab.pinned;
+            // Raster images have nothing but the preview.
+            t.show_preview = !t.has_source || (tab.show_preview && t.preview.is_some());
+            t.editor.update(cx, |e, cx| {
+                e.restore(
+                    crate::editor::Restore {
+                        text,
+                        cursor: tab.cursor,
+                        scroll: tab.scroll,
+                    },
+                    cx,
+                )
+            });
+            if saved.active == Some(ix) {
+                active_id = Some(id);
+            }
+        }
+        let active = active_id
+            .and_then(|id| self.tabs.iter().position(|t| t.id == id))
+            .or(if self.tabs.is_empty() { None } else { Some(0) });
+        if let Some(ix) = active {
+            self.activate(ix, window, cx);
+        }
+        cx.notify();
+    }
+
+    // ---------------------------------------------------------------------
     // Opening and closing
     // ---------------------------------------------------------------------
 
@@ -624,6 +807,7 @@ impl Workspace {
                     {
                         tab.pinned = true;
                     }
+                    this.schedule_session_save(window, cx);
                     cx.notify();
                 }
                 EditorEvent::Saved => {
@@ -1622,6 +1806,7 @@ impl Render for Workspace {
             .flex()
             .text_color(palette.text)
             .font_family(theme::fonts(cx).ui.clone())
+            .on_action(cx.listener(|_, _: &CloseWindow, window, _| window.remove_window()))
             .on_action(cx.listener(|this, _: &ToggleCommandPalette, window, cx| {
                 this.toggle_palette(window, cx)
             }))

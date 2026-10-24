@@ -78,6 +78,14 @@ enum Granularity {
     Line,
 }
 
+/// Unsaved text, cursor and scroll from a saved session.
+#[derive(Clone, Debug, Default)]
+pub struct Restore {
+    pub text: Option<String>,
+    pub cursor: usize,
+    pub scroll: f64,
+}
+
 #[derive(Serialize, Deserialize)]
 struct ClipboardMeta {
     per_selection: Vec<String>,
@@ -113,6 +121,8 @@ pub struct EditorView {
     disk_mtime: Option<SystemTime>,
     /// Never loads its file (see [`Self::placeholder`]).
     placeholder: bool,
+    /// Session state to apply once a background load finishes.
+    pending_restore: Option<Restore>,
     _subscriptions: Vec<gpui::Subscription>,
 }
 
@@ -162,6 +172,7 @@ impl EditorView {
             loading: false,
             disk_mtime: None,
             placeholder: false,
+            pending_restore: None,
             _subscriptions: subscriptions,
         }
     }
@@ -211,6 +222,40 @@ impl EditorView {
         this
     }
 
+    /// Puts back a session's unsaved text (as one undoable change, so the
+    /// file shows as modified) and its cursor and scroll position.
+    pub fn restore(&mut self, restore: Restore, cx: &mut Context<Self>) {
+        if self.loading {
+            self.pending_restore = Some(restore);
+            return;
+        }
+        if let Some(text) = restore.text
+            && text != self.state.text()
+        {
+            let mut sels = self.state.selections().clone();
+            self.state.doc.replace_all(&text, &mut sels);
+            self.state.set_selections(sels);
+            self.did_change(cx);
+        }
+        let cursor = restore.cursor.min(self.state.doc.len_chars());
+        self.state.set_cursor(cursor);
+        self.scroll.y = restore.scroll.max(0.);
+        self.autoscroll = None;
+        cx.notify();
+    }
+
+    /// What a session needs to bring this editor back.
+    pub fn view_state(&self) -> (usize, f64) {
+        (self.state.selections().primary().head, self.scroll.y)
+    }
+
+    /// The text to keep in a session: unsaved changes, or the text of an
+    /// untitled buffer.
+    pub fn unsaved_text(&self) -> Option<me_text::Rope> {
+        let untitled = self.path.is_none() && self.state.doc.len_chars() > 0;
+        (self.is_dirty() || untitled).then(|| self.state.doc.rope().clone())
+    }
+
     fn finish_load(&mut self, loaded: Loaded, cx: &mut Context<Self>) {
         crate::trace_phase("document loaded");
         self.loading = false;
@@ -232,6 +277,9 @@ impl EditorView {
                 self.syntax = Some(syntax);
                 self.schedule_parse(cx);
             }
+        }
+        if let Some(restore) = self.pending_restore.take() {
+            self.restore(restore, cx);
         }
     }
 

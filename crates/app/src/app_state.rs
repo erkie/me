@@ -12,6 +12,7 @@ use gpui::{
 use gpui_component::Root;
 use me_ipc::{OpenPath, Request, Response};
 
+use crate::session;
 use crate::workspace::{OpenOptions, Workspace};
 
 pub type Reply = UnboundedSender<Response>;
@@ -22,6 +23,8 @@ pub struct AppState {
     windows: Vec<(WindowHandle<Root>, Entity<Workspace>)>,
     waiters: HashMap<u64, Vec<Reply>>,
     last_origin: Option<Point<gpui::Pixels>>,
+    /// The app is quitting: windows closing now stay in the session.
+    quitting: bool,
 }
 
 impl Global for AppState {}
@@ -30,6 +33,24 @@ pub fn init(cx: &mut App) {
     cx.set_global(AppState::default());
     cx.on_window_closed(|cx, window_id| window_closed(window_id, cx))
         .detach();
+    // Quitting keeps every window, unsaved text included, for next time.
+    cx.on_app_quit(|cx| {
+        cx.global_mut::<AppState>().quitting = true;
+        for (handle, ws) in workspaces(cx) {
+            handle
+                .update(cx, |_, window, cx| {
+                    ws.update(cx, |ws, cx| ws.save_session(true, true, Some(window), cx))
+                })
+                .ok();
+        }
+        async {}
+    })
+    .detach();
+}
+
+/// Whether a `me -w` process is waiting for tab `id` to close.
+pub fn is_waited(id: u64, cx: &App) -> bool {
+    cx.global::<AppState>().waiters.contains_key(&id)
 }
 
 pub fn next_tab_id(cx: &mut App) -> u64 {
@@ -57,6 +78,10 @@ fn window_closed(window_id: WindowId, cx: &mut App) {
         return;
     };
     let (_, workspace) = state.windows.remove(ix);
+    // Closing never asks about unsaved files: they stay in the window's
+    // session and come back with it.
+    let quitting = cx.global::<AppState>().quitting;
+    workspace.update(cx, |ws, cx| ws.save_session(quitting, true, None, cx));
     for id in workspace.read(cx).tab_ids() {
         tab_closed(id, cx);
     }
@@ -66,8 +91,49 @@ pub fn workspaces(cx: &App) -> Vec<(WindowHandle<Root>, Entity<Workspace>)> {
     cx.global::<AppState>().windows.clone()
 }
 
+/// Opens a window, for `root` if given, with that folder's saved tabs.
 pub fn open_window(
     root: Option<PathBuf>,
+    cx: &mut App,
+) -> Option<(WindowHandle<Root>, Entity<Workspace>)> {
+    let saved = root
+        .as_ref()
+        .and_then(|root| session::load(&session::key_for_root(root)));
+    open_window_with(root, saved, None, cx)
+}
+
+/// Brings back the windows open when the app last quit, and windows with
+/// unsaved text; with none, opens an empty window.
+pub fn restore_or_open(cx: &mut App) {
+    let open_keys: Vec<String> = workspaces(cx)
+        .iter()
+        .map(|(_, ws)| ws.read(cx).session_key.clone())
+        .collect();
+    let mut restored = 0;
+    for (key, saved) in session::list() {
+        let wanted = saved.open || (session::is_scratch(&key) && saved.has_unsaved());
+        if !wanted || open_keys.contains(&key) {
+            continue;
+        }
+        if saved.root.as_ref().is_some_and(|root| !root.is_dir()) {
+            continue;
+        }
+        let root = saved.root.clone();
+        if open_window_with(root, Some(saved), Some(key), cx).is_some() {
+            restored += 1;
+        }
+    }
+    if restored == 0 && workspaces(cx).is_empty() {
+        open_window(None, cx);
+    }
+}
+
+/// Opens a window and restores `saved` into it. `key` names the session to
+/// keep using (for windows without a folder).
+fn open_window_with(
+    root: Option<PathBuf>,
+    saved: Option<session::WindowSession>,
+    key: Option<String>,
     cx: &mut App,
 ) -> Option<(WindowHandle<Root>, Entity<Workspace>)> {
     let default_size = size(px(1180.), px(780.));
@@ -77,6 +143,17 @@ pub fn open_window(
         && !cx.global::<AppState>().windows.is_empty()
     {
         bounds.origin = point(last.x + px(26.), last.y + px(26.));
+    }
+    // Where it was last time, if that's still on a screen.
+    if let Some([x, y, w, h]) = saved.as_ref().and_then(|s| s.bounds) {
+        let previous = Bounds::new(point(px(x), px(y)), size(px(w), px(h)));
+        let visible = cx
+            .displays()
+            .iter()
+            .any(|d| d.bounds().intersects(&previous));
+        if visible && w >= 480. && h >= 320. {
+            bounds = previous;
+        }
     }
     cx.global_mut::<AppState>().last_origin = Some(bounds.origin);
     let options = WindowOptions {
@@ -100,14 +177,15 @@ pub fn open_window(
         .open_window(options, |window, cx| {
             crate::trace_phase("platform window created");
             let ws = cx.new(|cx| Workspace::new(root, window, cx));
-            workspace = Some(ws.clone());
-            let guarded = ws.downgrade();
-            window.on_window_should_close(cx, move |window, cx| {
-                let Some(ws) = guarded.upgrade() else {
-                    return true;
-                };
-                confirm_close(&ws, window, cx)
+            ws.update(cx, |ws, cx| {
+                if let Some(key) = key {
+                    ws.session_key = key;
+                }
+                if let Some(saved) = saved {
+                    ws.restore_session(saved, window, cx);
+                }
             });
+            workspace = Some(ws.clone());
             window.focus(&ws.read(cx).focus_handle_for_window(), cx);
             crate::trace_phase("workspace built");
             cx.new(|cx| Root::new(ws, window, cx))
@@ -207,9 +285,15 @@ pub fn open(
                 match empty {
                     Some((handle, ws)) => {
                         let path = dir.path.clone();
+                        let saved = session::load(&session::key_for_root(&path));
                         handle
                             .update(cx, |_, window, cx| {
-                                ws.update(cx, |ws, cx| ws.set_root(path, window, cx))
+                                ws.update(cx, |ws, cx| {
+                                    ws.set_root(path, window, cx);
+                                    if let Some(saved) = saved {
+                                        ws.restore_session(saved, window, cx);
+                                    }
+                                })
                             })
                             .ok();
                         Some((handle, ws))
@@ -276,89 +360,14 @@ pub fn open(
                     .update(cx, |_, window, _| window.activate_window())
                     .ok();
             }
-            None => {
-                open_window(None, cx);
-            }
+            None => restore_or_open(cx),
         }
     }
     ids
 }
 
-/// Asks before closing a window with unsaved tabs. Returns whether to close
-/// right away; after a "Close" answer the window is removed explicitly.
-fn confirm_close(ws: &Entity<Workspace>, window: &mut gpui::Window, cx: &mut App) -> bool {
-    let dirty = ws.read(cx).dirty_count(cx);
-    if dirty == 0 || ws.read(cx).close_confirmed {
-        return true;
-    }
-    let message = if dirty == 1 {
-        "Close the window with 1 unsaved file?".to_string()
-    } else {
-        format!("Close the window with {dirty} unsaved files?")
-    };
-    let answer = window.prompt(
-        gpui::PromptLevel::Warning,
-        &message,
-        Some("Your changes will be lost."),
-        &["Close", "Cancel"],
-        cx,
-    );
-    let ws = ws.downgrade();
-    window
-        .spawn(cx, async move |cx| {
-            if answer.await.ok() == Some(0) {
-                cx.update(|window, cx| {
-                    if let Some(ws) = ws.upgrade() {
-                        ws.update(cx, |ws, _| ws.close_confirmed = true);
-                    }
-                    window.remove_window();
-                })
-                .ok();
-            }
-        })
-        .detach();
-    false
-}
-
-/// Cmd+Q: asks first if any window has unsaved files.
+/// Cmd+Q. Nothing to ask: every window's unsaved text is kept in its
+/// session (see `init`).
 pub fn quit(cx: &mut App) {
-    let windows = workspaces(cx);
-    let dirty: usize = windows
-        .iter()
-        .map(|(_, ws)| ws.read(cx).dirty_count(cx))
-        .sum();
-    if dirty == 0 {
-        cx.quit();
-        return;
-    }
-    let Some((handle, _)) = windows
-        .iter()
-        .find(|(_, ws)| ws.read(cx).dirty_count(cx) > 0)
-        .cloned()
-    else {
-        cx.quit();
-        return;
-    };
-    handle
-        .update(cx, |_, window, cx| {
-            window.activate_window();
-            let answer = window.prompt(
-                gpui::PromptLevel::Warning,
-                &format!(
-                    "Quit with {dirty} unsaved file{}?",
-                    if dirty == 1 { "" } else { "s" }
-                ),
-                Some("Your changes will be lost."),
-                &["Quit", "Cancel"],
-                cx,
-            );
-            window
-                .spawn(cx, async move |cx| {
-                    if answer.await.ok() == Some(0) {
-                        cx.update(|_, cx| cx.quit()).ok();
-                    }
-                })
-                .detach();
-        })
-        .ok();
+    cx.quit();
 }

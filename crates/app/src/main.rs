@@ -17,6 +17,7 @@ mod mermaid;
 mod palette;
 mod platform;
 mod search_panel;
+mod session;
 mod settings;
 mod theme;
 mod workspace;
@@ -115,7 +116,7 @@ fn main() {
     });
     app.on_reopen(|cx| {
         if app_state::workspaces(cx).is_empty() {
-            app_state::open_window(None, cx);
+            app_state::restore_or_open(cx);
         }
     });
 
@@ -170,13 +171,13 @@ fn main() {
                 cx.background_executor().timer(Duration::from_secs(3)).await;
                 cx.update(|cx| {
                     if app_state::workspaces(cx).is_empty() {
-                        app_state::open_window(None, cx);
+                        app_state::restore_or_open(cx);
                     }
                 });
             })
             .detach();
         } else {
-            app_state::open_window(None, cx);
+            app_state::restore_or_open(cx);
         }
         trace(started, "app setup done");
         cx.activate(true);
