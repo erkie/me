@@ -102,6 +102,20 @@ actions!(
     ]
 );
 
+/// Open a file in a pinned tab (from a menu).
+#[derive(Clone, Debug, PartialEq, gpui::Action)]
+#[action(namespace = workspace, no_json)]
+pub struct OpenFile {
+    pub path: std::path::PathBuf,
+}
+
+/// Show a file or folder in the sidebar (from a menu).
+#[derive(Clone, Debug, PartialEq, gpui::Action)]
+#[action(namespace = workspace, no_json)]
+pub struct RevealPath {
+    pub path: std::path::PathBuf,
+}
+
 /// Highlight the active file as `name` (a language name), or as plain text.
 #[derive(Clone, Debug, PartialEq, gpui::Action)]
 #[action(namespace = editor, no_json)]

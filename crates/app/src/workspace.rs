@@ -28,6 +28,7 @@ use crate::theme;
 /// Height of the title/tab bar. On macOS the traffic lights sit in it.
 pub const TITLE_BAR_HEIGHT: f32 = if cfg!(target_os = "macos") { 38. } else { 34. };
 const STATUS_BAR_HEIGHT: f32 = 26.;
+const BREADCRUMBS_HEIGHT: f32 = 26.;
 const TAB_TEXT_SIZE: f32 = 13.5;
 const MIN_SIDEBAR: f32 = 160.;
 /// How long after the last edit the session is saved.
@@ -1279,6 +1280,7 @@ impl Workspace {
         let ui_font = gpui::font(theme::fonts(cx).ui.clone());
         let text_system = window.text_system().clone();
         let inset = cfg!(target_os = "macos") && !(self.sidebar_visible && self.root.is_some());
+        let details = self.tab_details(cx);
         let tabs: Vec<AnyElement> = self
             .tabs
             .iter()
@@ -1288,6 +1290,7 @@ impl Workspace {
                 let active = Some(ix) == self.active;
                 let dirty = editor.is_dirty();
                 let title = editor.title();
+                let detail = details[ix].clone();
                 let icon = editor
                     .path()
                     .is_some()
@@ -1305,10 +1308,20 @@ impl Workspace {
                     underline: None,
                     strikethrough: None,
                 };
-                let text_width = text_system
-                    .shape_line(title.clone(), px(TAB_TEXT_SIZE), &[run], None)
+                let mut text_width = text_system
+                    .shape_line(title.clone(), px(TAB_TEXT_SIZE), &[run.clone()], None)
                     .width;
-                let width = (text_width + px(78.)).clamp(px(96.), px(260.));
+                if let Some(detail) = &detail {
+                    let run = gpui::TextRun {
+                        len: detail.len(),
+                        ..run
+                    };
+                    text_width += px(6.)
+                        + text_system
+                            .shape_line(detail.clone(), px(TAB_TEXT_SIZE - 1.5), &[run], None)
+                            .width;
+                }
+                let width = (text_width + px(78.)).clamp(px(96.), px(300.));
                 div()
                     .id(("tab", id as usize))
                     .group("tab")
@@ -1344,10 +1357,24 @@ impl Workspace {
                         div()
                             .flex_1()
                             .min_w(px(0.))
+                            .flex()
+                            .items_baseline()
+                            .gap(px(6.))
                             .overflow_hidden()
-                            .text_ellipsis()
                             .whitespace_nowrap()
-                            .child(title.clone()),
+                            .child(div().flex_none().child(title.clone()))
+                            // Tabs with the same name show where they are.
+                            .when_some(detail, |el, detail| {
+                                el.child(
+                                    div()
+                                        .min_w(px(0.))
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .text_size(px(TAB_TEXT_SIZE - 1.5))
+                                        .text_color(palette.text_tertiary)
+                                        .child(detail),
+                                )
+                            }),
                     )
                     .child(
                         div()
@@ -1503,6 +1530,174 @@ impl Workspace {
                         ),
                 )
             })
+    }
+
+    /// For tabs whose names clash, the shortest end of their folder path
+    /// that tells them apart ("text" for crates/text/Cargo.toml).
+    fn tab_details(&self, cx: &App) -> Vec<Option<SharedString>> {
+        let paths: Vec<Option<PathBuf>> = self
+            .tabs
+            .iter()
+            .map(|t| t.editor.read(cx).path().map(Path::to_path_buf))
+            .collect();
+        let name = |p: &PathBuf| p.file_name().map(|n| n.to_os_string());
+        paths
+            .iter()
+            .map(|path| {
+                let path = path.as_ref()?;
+                let twins: Vec<&PathBuf> = paths
+                    .iter()
+                    .flatten()
+                    .filter(|other| *other != path && name(other) == name(path))
+                    .collect();
+                if twins.is_empty() {
+                    return None;
+                }
+                let dirs = |p: &Path| -> Vec<String> {
+                    let parent = p.parent().unwrap_or(p);
+                    let parent = self
+                        .root
+                        .as_ref()
+                        .and_then(|r| parent.strip_prefix(r).ok())
+                        .unwrap_or(parent);
+                    parent
+                        .components()
+                        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                        .collect()
+                };
+                let mine = dirs(path);
+                let others: Vec<Vec<String>> = twins.iter().map(|t| dirs(t)).collect();
+                for take in 1..=mine.len().max(1) {
+                    let suffix = &mine[mine.len().saturating_sub(take)..];
+                    let clash = others
+                        .iter()
+                        .any(|o| o.len() >= suffix.len() && o[o.len() - suffix.len()..] == *suffix);
+                    if !clash || take == mine.len() {
+                        let text = suffix.join("/");
+                        return Some(if text.is_empty() {
+                            "./".into()
+                        } else {
+                            text.into()
+                        });
+                    }
+                }
+                None
+            })
+            .collect()
+    }
+
+    /// The path bar under the tabs: the file's folders (each opens a menu of
+    /// what's in it) and the file.
+    fn render_breadcrumbs(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let tab = self.active_tab()?;
+        let path = tab.editor.read(cx).path()?.to_path_buf();
+        let palette = theme::palette(cx).clone();
+        // Relative to the window's folder when inside it, else from the top.
+        let (mut dir, relative) = match self
+            .root
+            .as_ref()
+            .and_then(|root| Some((root.clone(), path.strip_prefix(root).ok()?.to_path_buf())))
+        {
+            Some(inside) => inside,
+            None => {
+                let top: PathBuf = path.ancestors().last().unwrap_or(Path::new("/")).into();
+                let relative = path.strip_prefix(&top).unwrap_or(&path).to_path_buf();
+                (top, relative)
+            }
+        };
+        let names: Vec<String> = relative
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect();
+        let chevron = || {
+            svg()
+                .path("icons/chevron-right.svg")
+                .size(px(12.))
+                .flex_none()
+                .text_color(palette.text_tertiary)
+        };
+        let mut children: Vec<AnyElement> = Vec::new();
+        for (ix, name) in names.iter().enumerate() {
+            let last = ix + 1 == names.len();
+            if last {
+                let icon = crate::file_icons::for_name(name, palette.is_dark);
+                children.push(
+                    div()
+                        .id("crumb-file")
+                        .flex()
+                        .items_center()
+                        .gap(px(2.))
+                        .px(px(4.))
+                        .rounded(px(4.))
+                        .text_color(palette.text)
+                        .hover(|s| s.bg(palette.hover))
+                        .child(
+                            svg()
+                                .path(icon.path)
+                                .size(px(20.))
+                                .mx(px(-3.))
+                                .flex_none()
+                                .text_color(icon.color),
+                        )
+                        .child(name.clone())
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                let path = this.active_path(cx);
+                                if let Some(dir) = path.as_ref().and_then(|p| p.parent()) {
+                                    folder_menu(dir, path.as_deref()).show(
+                                        event.position,
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            }),
+                        )
+                        .into_any_element(),
+                );
+            } else {
+                dir = dir.join(name);
+                let menu_dir = dir.clone();
+                let current = path.clone();
+                children.push(
+                    div()
+                        .id(("crumb", ix))
+                        .px(px(4.))
+                        .rounded(px(4.))
+                        .hover(|s| s.bg(palette.hover).text_color(palette.text))
+                        .child(name.clone())
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |_, event: &MouseDownEvent, window, cx| {
+                                folder_menu(&menu_dir, Some(&current)).show(
+                                    event.position,
+                                    window,
+                                    cx,
+                                );
+                            }),
+                        )
+                        .into_any_element(),
+                );
+                children.push(chevron().into_any_element());
+            }
+        }
+        Some(
+            div()
+                .id("breadcrumbs")
+                .h(px(BREADCRUMBS_HEIGHT))
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(1.))
+                .px(px(10.))
+                .overflow_x_hidden()
+                .whitespace_nowrap()
+                .bg(palette.editor_bg)
+                .text_size(px(12.5))
+                .text_color(palette.text_secondary)
+                .children(children)
+                .into_any_element(),
+        )
     }
 
     fn render_status_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1705,6 +1900,77 @@ fn status_item(
         .into_any_element()
 }
 
+/// What's in `dir`, for a path bar segment: files open, folders show their
+/// own contents one level down.
+fn folder_menu(dir: &Path, current: Option<&Path>) -> gpui_component::native_menu::NativeMenu {
+    use gpui_component::{Icon, native_menu::NativeMenu};
+    const MAX_ENTRIES: usize = 300;
+    const MAX_SUBMENUS: usize = 40;
+    let file_item = |menu: NativeMenu, entry: &me_project::DirEntry| {
+        // Menu icons take the text color; only the shape matters.
+        let icon = crate::file_icons::for_name(&entry.name, false);
+        let label = if Some(entry.path.as_path()) == current {
+            format!("{}  ✓", entry.name)
+        } else {
+            entry.name.clone()
+        };
+        menu.menu_with_icon(
+            label,
+            Icon::empty().path(icon.path),
+            Box::new(OpenFile {
+                path: entry.path.clone(),
+            }),
+        )
+    };
+    let folder_item = |menu: NativeMenu, entry: &me_project::DirEntry| {
+        menu.menu_with_icon(
+            entry.name.clone(),
+            Icon::empty().path("icons/folder.svg"),
+            Box::new(RevealPath {
+                path: entry.path.clone(),
+            }),
+        )
+    };
+    let entries = me_project::list_dir(dir).unwrap_or_default();
+    let mut menu = NativeMenu::new();
+    let mut submenus = 0;
+    for entry in entries.iter().take(MAX_ENTRIES) {
+        if !entry.is_dir {
+            menu = file_item(menu, entry);
+        } else if submenus < MAX_SUBMENUS {
+            submenus += 1;
+            let mut sub = NativeMenu::new();
+            for child in me_project::list_dir(&entry.path)
+                .unwrap_or_default()
+                .iter()
+                .take(MAX_ENTRIES)
+            {
+                sub = if child.is_dir {
+                    folder_item(sub, child)
+                } else {
+                    file_item(sub, child)
+                };
+            }
+            if sub.is_empty() {
+                menu = folder_item(menu, entry);
+            } else {
+                menu = menu.submenu(entry.name.clone(), sub);
+            }
+        } else {
+            menu = folder_item(menu, entry);
+        }
+    }
+    if entries.len() > MAX_ENTRIES {
+        menu = menu.separator().menu(
+            format!("{} more in the sidebar…", entries.len() - MAX_ENTRIES),
+            Box::new(RevealPath {
+                path: dir.to_path_buf(),
+            }),
+        );
+    }
+    menu
+}
+
 fn language_menu(current: Option<&'static str>) -> gpui_component::native_menu::NativeMenu {
     let mut menu = gpui_component::native_menu::NativeMenu::new().menu_with_check(
         "Plain Text",
@@ -1807,6 +2073,25 @@ impl Render for Workspace {
             .text_color(palette.text)
             .font_family(theme::fonts(cx).ui.clone())
             .on_action(cx.listener(|_, _: &CloseWindow, window, _| window.remove_window()))
+            .on_action(cx.listener(|this, action: &OpenFile, window, cx| {
+                this.open_path(
+                    action.path.clone(),
+                    OpenOptions {
+                        pin: true,
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                );
+            }))
+            .on_action(cx.listener(|this, action: &RevealPath, _, cx| {
+                if let Some(tree) = this.file_tree.clone() {
+                    this.sidebar_visible = true;
+                    this.sidebar_mode = SidebarMode::Files;
+                    tree.update(cx, |t, cx| t.reveal(&action.path, cx));
+                    cx.notify();
+                }
+            }))
             .on_action(cx.listener(|this, _: &ToggleCommandPalette, window, cx| {
                 this.toggle_palette(window, cx)
             }))
@@ -2005,6 +2290,7 @@ impl Render for Workspace {
                     .flex_col()
                     .bg(palette.editor_bg)
                     .child(self.render_tab_bar(window, cx))
+                    .children(self.render_breadcrumbs(cx))
                     .when(self.find_bar_open, |el| el.child(self.find_bar.clone()))
                     .child(div().flex_1().min_h(px(0.)).child(content))
                     .child(self.render_status_bar(cx)),
