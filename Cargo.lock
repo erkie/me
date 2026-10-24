@@ -1140,6 +1140,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossbeam-channel"
+version = "0.5.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98b0cc327b5bc766e7fda9c9260cc0fa81b43a8e240440422dff70788e3f9ef1"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
 name = "crossbeam-deque"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3848,6 +3857,7 @@ dependencies = [
  "ignore",
  "image",
  "me-ipc",
+ "me-lsp",
  "me-project",
  "me-syntax",
  "me-text",
@@ -3876,6 +3886,21 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "me-lsp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "crossbeam-channel",
+ "dirs 6.0.0",
+ "futures",
+ "lsp-types",
+ "ropey 1.6.1",
+ "serde",
+ "serde_json",
+ "url",
 ]
 
 [[package]]

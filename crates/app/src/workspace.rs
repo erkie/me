@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use me_lsp::Status;
 use me_syntax::SymbolKind;
 
 use gpui::{
@@ -22,6 +23,7 @@ use crate::find_bar::{FindBar, FindBarEvent};
 use crate::finder::{FinderEvent, FinderView};
 use crate::goto_line::{GoToLineEvent, GoToLinePrompt};
 use crate::image_preview::{ImagePreview, is_image, is_svg};
+use crate::lsp::{LanguageServers, Query, Target};
 use crate::markdown::{MarkdownEvent, MarkdownPreview, is_markdown};
 use crate::palette::{CommandPalette, PaletteEvent};
 use crate::picker::{Picker, PickerEvent, PickerItem};
@@ -39,6 +41,9 @@ const MIN_SIDEBAR: f32 = 160.;
 /// How long after the last edit the session is saved.
 const SESSION_SAVE_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
 const MAX_SIDEBAR: f32 = 600.;
+/// How long to wait for a language server before falling back to the
+/// built-in symbol index.
+const LSP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SidebarMode {
@@ -177,6 +182,8 @@ pub struct Workspace {
     last_bounds: Option<[f32; 4]>,
     /// Definitions in the folder's code, built the first time it's needed.
     symbol_index: Option<Arc<SymbolIndex>>,
+    /// The folder's language servers.
+    lsp: Option<Entity<LanguageServers>>,
     /// A go to definition waiting for the index to finish.
     pending_definition: Option<Task<()>>,
     picker: Entity<Picker>,
@@ -267,6 +274,7 @@ impl Workspace {
             save_task: None,
             last_bounds: None,
             symbol_index: None,
+            lsp: None,
             pending_definition: None,
             picker,
             picker_open: false,
@@ -298,6 +306,14 @@ impl Workspace {
         }
         self.session_key = session::key_for_root(&root);
         self.symbol_index = None;
+        let lsp = cx.new(|cx| LanguageServers::new(root.clone(), cx));
+        self._subscriptions
+            .push(cx.observe(&lsp, |_, _, cx| cx.notify()));
+        let editors: Vec<Entity<EditorView>> = self.tabs.iter().map(|t| t.editor.clone()).collect();
+        for editor in editors {
+            lsp.update(cx, |lsp, cx| lsp.track(&editor, cx));
+        }
+        self.lsp = Some(lsp);
         let tree = cx.new(|cx| FileTree::new(root.clone(), cx));
         self._subscriptions.push(cx.subscribe_in(
             &tree,
@@ -564,7 +580,108 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.find_definition(editor, pos, true, window, cx);
+        let Some((word_range, word)) = editor.read(cx).identifier_at(pos) else {
+            return;
+        };
+        let Some((request, name)) = self.lsp_locations(&editor, pos, Query::Definition, cx) else {
+            self.find_definition(editor, pos, true, window, cx);
+            return;
+        };
+        self.pending_definition = Some(cx.spawn_in(window, async move |this, cx| {
+            let targets = wait_for_server(&this, request, name, cx).await;
+            this.update_in(cx, |this, window, cx| {
+                this.pending_definition = None;
+                let targets = match targets {
+                    Some(targets) if !targets.is_empty() => targets,
+                    // No server answer: the built-in index.
+                    _ => return this.find_definition(editor, pos, true, window, cx),
+                };
+                // Already on the definition: show where it's used instead.
+                let (line, col) = editor.read(cx).state.doc.line_col(word_range.start);
+                let path = editor.read(cx).path().map(Path::to_path_buf);
+                if let [only] = targets.as_slice()
+                    && Some(&only.path) == path.as_ref()
+                    && only.line == line
+                    && only.col == col
+                {
+                    return this.find_references_at(editor, pos, window, cx);
+                }
+                this.show_targets(
+                    &format!("Definitions of {word}"),
+                    &word,
+                    targets,
+                    false,
+                    window,
+                    cx,
+                );
+            })
+            .ok();
+        }));
+    }
+
+    /// A language server's answer about the identifier at `pos`, if a
+    /// server for the file is running, with the server's name.
+    fn lsp_locations(
+        &self,
+        editor: &Entity<EditorView>,
+        pos: usize,
+        query: Query,
+        cx: &mut Context<Self>,
+    ) -> Option<(Task<anyhow::Result<Vec<Target>>>, SharedString)> {
+        let lsp = self.lsp.clone()?;
+        let name = lsp.read(cx).info(editor)?.name;
+        let request = lsp.update(cx, |lsp, cx| lsp.locations(editor, pos, query, cx))?;
+        Some((request, name))
+    }
+
+    /// Jumps to the one target, or offers a picker.
+    fn show_targets(
+        &mut self,
+        placeholder: &str,
+        word: &str,
+        targets: Vec<Target>,
+        always_pick: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let locations: Vec<Location> = targets
+            .iter()
+            .map(|t| Location {
+                path: t.path.clone(),
+                name: Arc::from(word),
+                kind: SymbolKind::Other,
+                line: t.line,
+                col: t.col,
+            })
+            .collect();
+        if locations.len() == 1 && !always_pick {
+            let target = locations.into_iter().next().unwrap();
+            self.jump_to(target, window, cx);
+            return;
+        }
+        let is_dark = theme::palette(cx).is_dark;
+        let items = targets
+            .iter()
+            .map(|t| {
+                let file = t
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                PickerItem {
+                    label: if t.line_text.is_empty() {
+                        word.to_string().into()
+                    } else {
+                        t.line_text.clone().into()
+                    },
+                    detail: format!("{}:{}", self.relative_path(&t.path), t.line + 1).into(),
+                    icon: Some(crate::file_icons::for_name(&file, is_dark)),
+                    symbol: None,
+                    depth: 0,
+                }
+            })
+            .collect();
+        self.show_picker(placeholder, items, locations, 0, window, cx);
     }
 
     fn find_definition(
@@ -826,15 +943,53 @@ impl Workspace {
         self.show_locations("Go to symbol in project…", locations, window, cx);
     }
 
-    /// Shift+F12: occurrences of the word under the cursor, in the project
-    /// search (a language server gives exact references).
+    /// Shift+F12: where the identifier at the cursor is used.
     fn find_references(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let word = self.active_editor().and_then(|editor| {
-            let e = editor.read(cx);
-            e.identifier_at(e.state.selections().primary().head)
-        });
-        let (Some((_, word)), Some(search)) = (word, self.search_panel.clone()) else {
+        match self.active_editor() {
+            Some(editor) => {
+                let head = editor.read(cx).state.selections().primary().head;
+                self.find_references_at(editor, head, window, cx);
+            }
+            None => self.show_search(window, cx),
+        }
+    }
+
+    /// References from the language server, or else the identifier as a
+    /// whole word in the project search.
+    fn find_references_at(
+        &mut self,
+        editor: Entity<EditorView>,
+        pos: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((_, word)) = editor.read(cx).identifier_at(pos) else {
             self.show_search(window, cx);
+            return;
+        };
+        let Some((request, name)) = self.lsp_locations(&editor, pos, Query::References, cx) else {
+            self.search_word(word, window, cx);
+            return;
+        };
+        self.pending_definition = Some(cx.spawn_in(window, async move |this, cx| {
+            let targets = wait_for_server(&this, request, name, cx).await;
+            this.update_in(cx, |this, window, cx| {
+                this.pending_definition = None;
+                match targets {
+                    Some(targets) if !targets.is_empty() => {
+                        let title = format!("References to {word}");
+                        this.show_targets(&title, &word, targets, true, window, cx);
+                    }
+                    _ => this.search_word(word, window, cx),
+                }
+            })
+            .ok();
+        }));
+    }
+
+    /// The project search for `word`, whole word and case sensitive.
+    fn search_word(&mut self, word: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(search) = self.search_panel.clone() else {
             return;
         };
         self.sidebar_visible = true;
@@ -1164,6 +1319,9 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Tab {
         let id = app_state::next_tab_id(cx);
+        if let Some(lsp) = &self.lsp {
+            lsp.update(cx, |lsp, cx| lsp.track(&editor, cx));
+        }
         let subscriptions = vec![cx.subscribe_in(
             &editor,
             window,
@@ -2181,6 +2339,35 @@ impl Workspace {
                     .text_color(palette.text_secondary)
                     .children(left);
             }
+            if let Some(info) = self.lsp.as_ref().and_then(|l| l.read(cx).info(&tab.editor)) {
+                let stopped = matches!(info.status, Status::Stopped(_));
+                let text: SharedString = match &info.status {
+                    Status::Starting => format!("{} starting…", info.name).into(),
+                    Status::Busy(work) => {
+                        let work: String = work.chars().take(48).collect();
+                        format!("{}: {work}", info.name).into()
+                    }
+                    Status::Ready => info.name.clone(),
+                    Status::Stopped(_) => format!("{} stopped", info.name).into(),
+                };
+                let detail = match &info.status {
+                    Status::Stopped(detail) if !detail.is_empty() => Some(detail.clone()),
+                    _ => None,
+                };
+                let name = info.name.clone();
+                right.push(status_item(
+                    "status-lsp",
+                    text,
+                    &palette,
+                    cx.listener(move |_, event: &MouseDownEvent, window, cx| {
+                        server_menu(&name, stopped, detail.as_deref()).show(
+                            event.position,
+                            window,
+                            cx,
+                        )
+                    }),
+                ));
+            }
             right.push(status_item(
                 "status-language",
                 language.unwrap_or("Plain Text").into(),
@@ -2394,6 +2581,33 @@ fn folder_menu(dir: &Path, current: Option<&Path>) -> gpui_component::native_men
                 path: dir.to_path_buf(),
             }),
         );
+    }
+    menu
+}
+
+/// The language server's status bar menu.
+fn server_menu(
+    name: &str,
+    stopped: bool,
+    detail: Option<&str>,
+) -> gpui_component::native_menu::NativeMenu {
+    let mut menu = gpui_component::native_menu::NativeMenu::new();
+    if let Some(detail) = detail {
+        let detail: String = detail.chars().take(80).collect();
+        menu = menu
+            .menu_with_disabled(detail, true, Box::new(RestartLanguageServer))
+            .separator();
+    }
+    menu = menu.menu(
+        if stopped {
+            format!("Start {name}")
+        } else {
+            format!("Restart {name}")
+        },
+        Box::new(RestartLanguageServer),
+    );
+    if !stopped {
+        menu = menu.menu(format!("Stop {name}"), Box::new(StopLanguageServer));
     }
     menu
 }
@@ -2687,6 +2901,16 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &GoToProjectSymbol, window, cx| {
                 this.show_project_symbols(window, cx)
             }))
+            .on_action(cx.listener(|this, _: &RestartLanguageServer, _, cx| {
+                if let (Some(lsp), Some(editor)) = (this.lsp.clone(), this.active_editor()) {
+                    lsp.update(cx, |lsp, cx| lsp.restart(&editor, cx));
+                }
+            }))
+            .on_action(cx.listener(|this, _: &StopLanguageServer, _, cx| {
+                if let (Some(lsp), Some(editor)) = (this.lsp.clone(), this.active_editor()) {
+                    lsp.update(cx, |lsp, cx| lsp.stop(&editor, cx));
+                }
+            }))
             .on_action(
                 cx.listener(|this, _: &NavigateBack, window, cx| this.navigate(true, window, cx)),
             )
@@ -2815,4 +3039,37 @@ fn symbol_label(symbol: &me_syntax::Symbol) -> String {
         SymbolKind::Impl => format!("impl {}", symbol.name),
         _ => symbol.name.clone(),
     }
+}
+
+/// Waits for a language server's answer: says so in the status bar when
+/// it's slow, and gives up after [`LSP_TIMEOUT`] (the caller falls back).
+async fn wait_for_server<T: Unpin + 'static>(
+    this: &gpui::WeakEntity<Workspace>,
+    request: Task<anyhow::Result<T>>,
+    name: SharedString,
+    cx: &mut gpui::AsyncWindowContext,
+) -> Option<T> {
+    use futures::future::{Either, select};
+    let slow = cx
+        .background_executor()
+        .timer(std::time::Duration::from_millis(400));
+    let request = match select(request, slow).await {
+        Either::Left((result, _)) => return result.ok(),
+        Either::Right((_, request)) => request,
+    };
+    this.update(cx, |this, cx| {
+        this.flash_message(format!("Asking {name}…"), cx)
+    })
+    .ok();
+    let timeout = cx.background_executor().timer(LSP_TIMEOUT);
+    let result = match select(request, timeout).await {
+        Either::Left((result, _)) => result.ok(),
+        Either::Right(_) => None,
+    };
+    this.update(cx, |this, cx| {
+        this.flash = None;
+        cx.notify();
+    })
+    .ok();
+    result
 }

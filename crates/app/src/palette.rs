@@ -70,6 +70,11 @@ fn commands(cx: &App) -> Vec<(String, Box<dyn Action>)> {
         ("Find References".into(), Box::new(FindReferences)),
         ("Go Back".into(), Box::new(NavigateBack)),
         ("Go Forward".into(), Box::new(NavigateForward)),
+        (
+            "Language Server: Restart".into(),
+            Box::new(RestartLanguageServer),
+        ),
+        ("Language Server: Stop".into(), Box::new(StopLanguageServer)),
         ("Find…".into(), Box::new(Find)),
         ("Find in Project…".into(), Box::new(ToggleProjectSearch)),
         (word_wrap.into(), Box::new(ToggleWordWrap)),

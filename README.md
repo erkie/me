@@ -33,10 +33,12 @@ code. The plan and the reasoning behind the technology choice are in
 - `⌘T` fuzzy file finder (nucleo, with background indexing)
 - `⇧⌘F` project search and replace (ripgrep's engine, streaming results)
 - `⌘F` find and replace in a file, with regex, case, and whole-word options
-- **Go to definition** with `⌘`-click or `F12`, in every language we
-  highlight and with nothing to install (a tree-sitter symbol index of the
-  folder); `⌘R` jumps to a symbol in the file, `⇧⌘R` in the project, and
-  `⌃-` / `⌃⇧-` go back and forward
+- **Go to definition** with `⌘`-click or `F12` and **find references**
+  with `⇧F12`, through the language's standard server when it's installed
+  (rust-analyzer, gopls, typescript-language-server, pyright, clangd, …)
+  and a built-in tree-sitter symbol index otherwise, so it works in every
+  language we highlight with nothing to install; `⌘R` jumps to a symbol in
+  the file, `⇧⌘R` in the project, and `⌃-` / `⌃⇧-` go back and forward
 - Multiple selections: `⌘D`, `⌘L`, `⇧⌘L`, `⌃⌘G`, `⌃⇧↑/↓`, `⌥`-click,
   and **`⌥`-drag column selection**
 - Never loses work: closing a window or quitting keeps unsaved text, tabs
@@ -73,6 +75,41 @@ me -w FILE         # wait until the tab is closed
 me -n ...          # new window
 some-command | me -
 ```
+
+## Language servers
+
+Me starts a language server the first time you open a file of its
+language in a folder, and stops it when the window closes (or ten minutes
+after its last file closed). It looks for the server on your login shell's
+`PATH`, plus `~/.cargo/bin`, `~/go/bin`, `~/.local/bin` and Homebrew:
+
+| Languages | Server (first one installed wins) |
+| --- | --- |
+| Rust | `rust-analyzer` (`rustup component add rust-analyzer`) |
+| Go | `gopls` |
+| TypeScript, JavaScript | `typescript-language-server`, `vtsls` |
+| Python | `pyright-langserver`, `basedpyright-langserver`, `pylsp`, `jedi-language-server` |
+| C, C++ | `clangd` |
+| Java, Ruby, Swift, Lua, Shell | `jdtls`, `ruby-lsp`/`solargraph`, `sourcekit-lsp`, `lua-language-server`, `bash-language-server` |
+
+The status bar shows the server and what it's doing; click it to restart
+or stop it. Without a server (or while it's still starting) go to
+definition uses the built-in index. To pick another server or turn one off,
+edit `settings.json` (`~/Library/Application Support/Me` on macOS,
+`~/.config/me` elsewhere):
+
+```json
+{
+  "language_servers": {
+    "python": { "command": "pylsp" },
+    "rust": { "initialization_options": { "cargo": { "features": "all" } } },
+    "typescript": { "enabled": false }
+  }
+}
+```
+
+The keys are `rust`, `go`, `typescript`, `python`, `c`, `java`, `ruby`,
+`swift`, `lua` and `shell`.
 
 ## Development
 

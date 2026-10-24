@@ -105,6 +105,8 @@ actions!(
         GoToProjectSymbol,
         NavigateBack,
         NavigateForward,
+        RestartLanguageServer,
+        StopLanguageServer,
     ]
 );
 

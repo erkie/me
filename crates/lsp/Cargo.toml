@@ -1,0 +1,18 @@
+[package]
+name = "me-lsp"
+description = "Language server client: JSON-RPC over a server's stdin/stdout, position conversions, and the servers we know how to start."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+crossbeam-channel.workspace = true
+dirs.workspace = true
+futures = "0.3"
+lsp-types = "0.97"
+ropey.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+url = "2"

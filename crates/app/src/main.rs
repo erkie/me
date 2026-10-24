@@ -11,6 +11,7 @@ mod finder;
 mod goto_line;
 mod image_preview;
 mod ipc;
+mod lsp;
 mod markdown;
 mod menus;
 mod mermaid;

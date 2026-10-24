@@ -281,8 +281,7 @@ fn render_row(
             el.child(
                 svg()
                     .path(icon.path)
-                    .size(px(22.))
-                    .mx(px(-3.))
+                    .size(px(20.))
                     .flex_none()
                     .text_color(icon.color),
             )

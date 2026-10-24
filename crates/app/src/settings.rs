@@ -2,6 +2,7 @@
 //! `~/Library/Application Support/Me/settings.json` on macOS and
 //! `~/.config/me/settings.json` elsewhere.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use gpui::{App, Global};
@@ -17,6 +18,26 @@ pub struct Settings {
     /// Editor font size; the markdown preview scales with it.
     pub font_size: f32,
     pub word_wrap: bool,
+    /// Language server overrides by group ("rust", "typescript", "python",
+    /// "go", "c", …): `{"python": {"command": "pylsp"}}`,
+    /// `{"rust": {"enabled": false}}`.
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub language_servers: HashMap<String, LanguageServerSettings>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LanguageServerSettings {
+    /// `false` turns the server off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// A command name (found on PATH) or path, instead of the default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub initialization_options: Option<serde_json::Value>,
 }
 
 impl Default for Settings {
@@ -24,6 +45,7 @@ impl Default for Settings {
         Self {
             font_size: DEFAULT_FONT_SIZE,
             word_wrap: false,
+            language_servers: HashMap::new(),
         }
     }
 }

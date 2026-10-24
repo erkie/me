@@ -381,13 +381,18 @@ their whole job, and they are what VS Code and Zed run too. Two tiers:
    `Cmd+Shift+R` the project's; the path bar shows the symbols around the
    cursor; Ctrl+- goes back. Shift+F12 searches the project for the word.
    Every language we highlight, a few MB of memory, not type-aware.
-2. **LSP, when a server is installed.** A `me-lsp` crate speaks JSON-RPC
-   over stdio (`lsp-types`). A server starts the first time a file of its
-   language opens in a folder (found on `PATH`, configured in
-   `settings.json`), open buffers sync incrementally (our `ByteEdit`s become
-   LSP ranges in UTF-16), and Cmd+click asks for `textDocument/definition`,
-   Cmd-hover for `hover`. Falls back to tier 1 without a server.
-   References, rename and diagnostics can follow.
+2. **LSP, when a server is installed** (done). The `me-lsp` crate speaks
+   JSON-RPC over stdio (`lsp-types`), with a writer thread so sending a
+   big buffer never blocks the UI. A server starts the first time a file
+   of its language opens in a folder (found on the login shell's `PATH`,
+   overridable in `settings.json`); open buffers sync as whole text 250 ms
+   after an edit and right before a request (incremental sync from our
+   `ByteEdit`s is a later optimization); positions are UTF-8 when the
+   server agrees, else UTF-16. Cmd+click/F12 ask `textDocument/definition`
+   and Shift+F12 `textDocument/references`, falling back to tier 1 when
+   there's no server, it's starting, or it takes over 4 s. The status bar
+   shows `$/progress` and offers restart/stop. Hover, rename and
+   diagnostics can follow.
 
 Language servers can use a lot of memory (rust-analyzer: gigabytes), so
 they only run while a window has files of their language open and stop

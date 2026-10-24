@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["crates/text", "crates/project", "crates/ipc", "crates/cli", "crates/syntax", "crates/app"]
-default-members = ["crates/text", "crates/project", "crates/ipc", "crates/cli", "crates/syntax", "crates/app"]
+members = ["crates/text", "crates/project", "crates/ipc", "crates/cli", "crates/syntax", "crates/lsp", "crates/app"]
+default-members = ["crates/text", "crates/project", "crates/ipc", "crates/cli", "crates/syntax", "crates/lsp", "crates/app"]
 
 [workspace.package]
 version = "0.1.0"
@@ -14,6 +14,7 @@ me-text = { path = "crates/text" }
 me-syntax = { path = "crates/syntax" }
 me-project = { path = "crates/project" }
 me-ipc = { path = "crates/ipc" }
+me-lsp = { path = "crates/lsp" }
 
 # UI. Pinned exactly: GPUI is pre-1.0 and changes between snapshots.
 gpui = { package = "gpui-pre", version = "=0.3.9" }

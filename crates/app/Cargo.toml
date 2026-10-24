@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 me-ipc.workspace = true
+me-lsp.workspace = true
 me-project.workspace = true
 me-syntax.workspace = true
 me-text.workspace = true
