@@ -1,14 +1,16 @@
 //! Language servers for one window's folder. A server starts the first
-//! time a file of its language opens, gets the open buffers (whole text,
-//! a moment after each edit), and answers go to definition and find
-//! references. When there is no server, it's still starting, or it doesn't
-//! answer in time, the workspace falls back to the built-in symbol index.
+//! time a file of its language opens and gets the open buffers (what
+//! changed, a moment after each edit). It answers go to definition, find
+//! references, hover and rename, and sends the problems it finds. When
+//! there is no server, it's still starting, or it doesn't answer in time,
+//! the workspace falls back to the built-in symbol index.
 //!
 //! A server stops when its window closes, or a while after its last file
 //! closed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,9 +20,11 @@ use futures::channel::mpsc;
 use gpui::{App, Context, Entity, EntityId, SharedString, Subscription, Task};
 use me_lsp::registry::{self, Group};
 use me_lsp::types as lsp;
-use me_lsp::{Server, Status};
+use me_lsp::{Encoding, Event, Server, Status};
 use me_text::Rope;
 
+use crate::editor::diagnostics::{Diagnostic, Severity};
+use crate::editor::hover::HoverInfo;
 use crate::editor::{EditorEvent, EditorView};
 use crate::settings;
 
@@ -54,6 +58,39 @@ pub struct ServerInfo {
     pub status: Status,
 }
 
+/// One problem, for the problems list.
+#[derive(Clone, Debug)]
+pub struct Problem {
+    pub path: PathBuf,
+    /// 0-based line and char column.
+    pub line: usize,
+    pub col: usize,
+    pub severity: Severity,
+    pub message: String,
+}
+
+/// A rename's edits to one file, in the server's positions.
+pub struct FileEdit {
+    pub path: PathBuf,
+    pub edits: Vec<lsp::TextEdit>,
+}
+
+/// What a rename at a spot would change: its chars and the current name.
+pub type RenameSpot = Option<(Range<usize>, String)>;
+
+/// A rename's edits, and how the server counted columns in them.
+pub struct Rename {
+    pub files: Vec<FileEdit>,
+    pub encoding: Encoding,
+}
+
+/// The diagnostics a server last sent for a file.
+struct Published {
+    /// The path as the server gave it.
+    path: PathBuf,
+    items: Vec<lsp::Diagnostic>,
+}
+
 struct Entry {
     group: &'static Group,
     /// The server's name, once one was found.
@@ -72,6 +109,9 @@ struct Entry {
 #[derive(Clone, PartialEq)]
 struct DocTarget {
     path: PathBuf,
+    /// With symlinks resolved, to match the paths servers report problems
+    /// under.
+    canonical: PathBuf,
     uri: lsp::Uri,
     group: &'static str,
     language_id: &'static str,
@@ -81,8 +121,8 @@ struct Doc {
     editor: gpui::WeakEntity<EditorView>,
     target: Option<DocTarget>,
     version: i32,
-    /// Revision of the text the server has; `None` until opened there.
-    synced: Option<u64>,
+    /// The text the server has and its revision; `None` until opened there.
+    sent: Option<(u64, Rope)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -90,6 +130,8 @@ pub struct LanguageServers {
     root: PathBuf,
     servers: HashMap<&'static str, Entry>,
     docs: HashMap<EntityId, Doc>,
+    /// Problems by canonical path, from whichever server sent them.
+    diagnostics: HashMap<PathBuf, Published>,
     sync_task: Option<Task<()>>,
     _quit: Subscription,
 }
@@ -106,6 +148,7 @@ impl LanguageServers {
             root,
             servers: HashMap::new(),
             docs: HashMap::new(),
+            diagnostics: HashMap::new(),
             sync_task: None,
             _quit: quit,
         }
@@ -143,7 +186,7 @@ impl LanguageServers {
                 editor: editor.downgrade(),
                 target: None,
                 version: 0,
-                synced: None,
+                sent: None,
                 _subscriptions: subscriptions,
             },
         );
@@ -155,7 +198,7 @@ impl LanguageServers {
             return;
         };
         if let Some(target) = doc.target {
-            if doc.synced.is_some()
+            if doc.sent.is_some()
                 && let Some(server) = self.live_server(target.group)
             {
                 server.did_close(&target.uri);
@@ -176,6 +219,7 @@ impl LanguageServers {
             let (group, language_id) = registry::group_for(editor.language_name()?)?;
             Some(DocTarget {
                 uri: me_lsp::uri_from_path(&path)?,
+                canonical: std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone()),
                 path,
                 group: group.key,
                 language_id,
@@ -187,7 +231,7 @@ impl LanguageServers {
         }
         let old = self.docs.get_mut(&id).and_then(|doc| {
             let old = std::mem::replace(&mut doc.target, target.clone());
-            let was_open = doc.synced.take().is_some();
+            let was_open = doc.sent.take().is_some();
             old.filter(|_| was_open)
         });
         if let Some(old) = old {
@@ -205,6 +249,7 @@ impl LanguageServers {
             }
             self.sync_doc(id, cx);
         }
+        self.push_diagnostics(id, cx);
     }
 
     fn live_server(&self, group: &str) -> Option<Arc<Server>> {
@@ -215,7 +260,7 @@ impl LanguageServers {
     fn doc_server(&self, id: EntityId) -> Option<(Arc<Server>, DocTarget)> {
         let doc = self.docs.get(&id)?;
         let target = doc.target.clone()?;
-        doc.synced?;
+        doc.sent.as_ref()?;
         Some((self.live_server(target.group)?, target))
     }
 
@@ -263,7 +308,7 @@ impl LanguageServers {
         let options = settings.initialization_options;
         let key = group.key;
         entry._task = Some(cx.spawn(async move |this, cx| {
-            let (tx, mut statuses) = mpsc::unbounded();
+            let (tx, mut events) = mpsc::unbounded();
             let spawn_root = root.clone();
             let spawned = cx
                 .background_executor()
@@ -337,10 +382,18 @@ impl LanguageServers {
             if opened.is_err() {
                 return;
             }
-            while let Some(status) = statuses.next().await {
+            while let Some(event) = events.next().await {
                 let alive = this.update(cx, |this, cx| {
-                    if let Some(entry) = this.servers.get_mut(key) {
-                        entry.status = status;
+                    match event {
+                        Event::Status(status) => {
+                            if matches!(status, Status::Stopped(_)) {
+                                this.clear_diagnostics(key, cx);
+                            }
+                            if let Some(entry) = this.servers.get_mut(key) {
+                                entry.status = status;
+                            }
+                        }
+                        Event::Diagnostics(params) => this.publish(key, params, cx),
                     }
                     cx.notify();
                 });
@@ -373,6 +426,7 @@ impl LanguageServers {
                 {
                     server.shutdown();
                 }
+                this.clear_diagnostics(group, cx);
                 cx.notify();
             })
             .ok();
@@ -392,7 +446,7 @@ impl LanguageServers {
         }));
     }
 
-    /// Sends a buffer's text to its server if the server's copy is stale
+    /// Sends a buffer's changes to its server if the server's copy is stale
     /// (opening it there the first time).
     fn sync_doc(&mut self, id: EntityId, cx: &mut Context<Self>) {
         let Some(doc) = self.docs.get(&id) else {
@@ -409,7 +463,7 @@ impl LanguageServers {
         };
         let editor = editor.read(cx);
         let revision = editor.revision();
-        if doc.synced == Some(revision) {
+        if doc.sent.as_ref().is_some_and(|(sent, _)| *sent == revision) {
             return;
         }
         let rope = editor.state.doc.rope().clone();
@@ -418,12 +472,312 @@ impl LanguageServers {
         }
         let doc = self.docs.get_mut(&id).unwrap();
         doc.version += 1;
-        if doc.synced.is_none() {
-            server.did_open(&target.uri, target.language_id, doc.version, rope);
-        } else {
-            server.did_change(&target.uri, doc.version, rope);
+        match doc.sent.take() {
+            None => server.did_open(&target.uri, target.language_id, doc.version, rope.clone()),
+            Some((_, old)) => server.did_change(&target.uri, doc.version, Some(old), rope.clone()),
         }
-        doc.synced = Some(revision);
+        doc.sent = Some((revision, rope));
+    }
+
+    // ---------------------------------------------------------------------
+    // Diagnostics
+    // ---------------------------------------------------------------------
+
+    /// A server's problems for one file: kept, and shown in its buffers.
+    fn publish(
+        &mut self,
+        group: &'static str,
+        params: lsp::PublishDiagnosticsParams,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(path) = me_lsp::path_from_uri(&params.uri) else {
+            return;
+        };
+        if self.live_server(group).is_none() {
+            return;
+        }
+        let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        if params.diagnostics.is_empty() {
+            self.diagnostics.remove(&canonical);
+        } else {
+            self.diagnostics.insert(
+                canonical.clone(),
+                Published {
+                    path,
+                    items: params.diagnostics,
+                },
+            );
+        }
+        let ids: Vec<EntityId> = self
+            .docs
+            .iter()
+            .filter(|(_, d)| d.target.as_ref().is_some_and(|t| t.canonical == canonical))
+            // Problems with an older text than the server already has are
+            // about to be replaced.
+            .filter(|(_, d)| match params.version {
+                Some(version) => d.sent.is_none() || version >= d.version,
+                None => true,
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ids {
+            self.push_diagnostics(id, cx);
+        }
+    }
+
+    /// Shows a buffer the problems known for its file.
+    fn push_diagnostics(&self, id: EntityId, cx: &mut App) {
+        let Some(doc) = self.docs.get(&id) else {
+            return;
+        };
+        let Some(editor) = doc.editor.upgrade() else {
+            return;
+        };
+        let target = doc.target.as_ref();
+        let items = target
+            .and_then(|t| self.diagnostics.get(&t.canonical))
+            .map(|p| p.items.clone())
+            .unwrap_or_default();
+        let encoding = target
+            .and_then(|t| self.live_server(t.group))
+            .map_or(Encoding::Utf16, |s| s.encoding());
+        editor.update(cx, |editor, cx| {
+            if items.is_empty() && editor.diagnostics().is_empty() {
+                return;
+            }
+            let rope = editor.state.doc.rope().clone();
+            let diagnostics = items
+                .iter()
+                .map(|d| to_diagnostic(&rope, d, encoding))
+                .collect();
+            editor.set_diagnostics(diagnostics, cx);
+        });
+    }
+
+    /// Forgets a server's problems (it stopped).
+    fn clear_diagnostics(&mut self, group: &'static str, cx: &mut Context<Self>) {
+        let ids: Vec<EntityId> = self
+            .docs
+            .iter()
+            .filter(|(_, d)| d.target.as_ref().is_some_and(|t| t.group == group))
+            .map(|(id, _)| *id)
+            .collect();
+        let paths: HashSet<PathBuf> = ids
+            .iter()
+            .filter_map(|id| Some(self.docs.get(id)?.target.as_ref()?.canonical.clone()))
+            .collect();
+        // Files that aren't open: anything whose language is the group's.
+        self.diagnostics.retain(|path, _| {
+            !paths.contains(path)
+                && !me_syntax::language_for_path(path)
+                    .and_then(|l| registry::group_for(l.name))
+                    .is_some_and(|(g, _)| g.key == group)
+        });
+        for id in ids {
+            self.push_diagnostics(id, cx);
+        }
+    }
+
+    /// Every problem in the folder, by file and position. Open files use
+    /// their buffers' (kept in place while typing).
+    pub fn problems(&self, cx: &App) -> Vec<Problem> {
+        let mut problems = Vec::new();
+        let mut covered = HashSet::new();
+        for doc in self.docs.values() {
+            let (Some(target), Some(editor)) = (&doc.target, doc.editor.upgrade()) else {
+                continue;
+            };
+            if !self.diagnostics.contains_key(&target.canonical)
+                || !covered.insert(target.canonical.clone())
+            {
+                continue;
+            }
+            let editor = editor.read(cx);
+            let rope = editor.state.doc.rope();
+            for d in editor.diagnostics() {
+                if d.severity == Severity::Hint {
+                    continue;
+                }
+                let pos = rope.byte_to_char(d.range.start.min(rope.len_bytes()));
+                let line = rope.char_to_line(pos);
+                problems.push(Problem {
+                    path: target.path.clone(),
+                    line,
+                    col: pos - rope.line_to_char(line),
+                    severity: d.severity,
+                    message: d.message.clone(),
+                });
+            }
+        }
+        for (canonical, published) in &self.diagnostics {
+            if covered.contains(canonical) {
+                continue;
+            }
+            for d in &published.items {
+                let severity = severity(d.severity);
+                if severity == Severity::Hint {
+                    continue;
+                }
+                problems.push(Problem {
+                    path: published.path.clone(),
+                    line: d.range.start.line as usize,
+                    col: d.range.start.character as usize,
+                    severity,
+                    message: d.message.clone(),
+                });
+            }
+        }
+        problems.sort_by(|a, b| (&a.path, a.line, a.col).cmp(&(&b.path, b.line, b.col)));
+        problems
+    }
+
+    /// Errors and warnings in the folder.
+    pub fn problem_counts(&self) -> (usize, usize) {
+        let mut counts = (0, 0);
+        for d in self.diagnostics.values().flat_map(|p| &p.items) {
+            match severity(d.severity) {
+                Severity::Error => counts.0 += 1,
+                Severity::Warning => counts.1 += 1,
+                _ => {}
+            }
+        }
+        counts
+    }
+
+    // ---------------------------------------------------------------------
+    // Hover and rename
+    // ---------------------------------------------------------------------
+
+    /// What the server says about the symbol at char offset `pos`.
+    pub fn hover(
+        &mut self,
+        editor: &Entity<EditorView>,
+        pos: usize,
+        cx: &mut Context<Self>,
+    ) -> Option<Task<anyhow::Result<Option<HoverInfo>>>> {
+        let (server, at, rope) = self.at(editor, pos, "hoverProvider", cx)?;
+        let encoding = server.encoding();
+        let request = server.request::<lsp::request::HoverRequest>(lsp::HoverParams {
+            text_document_position_params: at,
+            work_done_progress_params: Default::default(),
+        });
+        Some(cx.background_executor().spawn(async move {
+            let Some(hover) = request.await? else {
+                return Ok(None);
+            };
+            let markdown = hover_markdown(hover.contents);
+            if markdown.trim().is_empty() {
+                return Ok(None);
+            }
+            Ok(Some(HoverInfo {
+                markdown: markdown.into(),
+                range: hover.range.map(|r| me_lsp::char_range(&rope, r, encoding)),
+            }))
+        }))
+    }
+
+    /// The name a rename at `pos` would change, and its chars; `None` from
+    /// the task when there's nothing to rename there.
+    pub fn prepare_rename(
+        &mut self,
+        editor: &Entity<EditorView>,
+        pos: usize,
+        cx: &mut Context<Self>,
+    ) -> Option<Task<anyhow::Result<RenameSpot>>> {
+        let (server, at, rope) = self.at(editor, pos, "renameProvider", cx)?;
+        let word = editor.read(cx).identifier_at(pos);
+        if !server.supports_at("/renameProvider/prepareProvider") {
+            return Some(Task::ready(Ok(word)));
+        }
+        let encoding = server.encoding();
+        let request = server.request::<lsp::request::PrepareRenameRequest>(at);
+        Some(cx.background_executor().spawn(async move {
+            Ok(match request.await? {
+                None => None,
+                Some(lsp::PrepareRenameResponse::Range(range)) => {
+                    let range = me_lsp::char_range(&rope, range, encoding);
+                    let name = rope.slice(range.clone()).to_string();
+                    Some((range, name))
+                }
+                Some(lsp::PrepareRenameResponse::RangeWithPlaceholder { range, placeholder }) => {
+                    Some((me_lsp::char_range(&rope, range, encoding), placeholder))
+                }
+                Some(lsp::PrepareRenameResponse::DefaultBehavior { .. }) => word,
+            })
+        }))
+    }
+
+    /// Asks the server for the edits that rename the symbol at `pos`.
+    pub fn rename(
+        &mut self,
+        editor: &Entity<EditorView>,
+        pos: usize,
+        new_name: String,
+        cx: &mut Context<Self>,
+    ) -> Option<Task<anyhow::Result<Rename>>> {
+        let (server, at, _) = self.at(editor, pos, "renameProvider", cx)?;
+        let encoding = server.encoding();
+        let request = server.request::<lsp::request::Rename>(lsp::RenameParams {
+            text_document_position: at,
+            new_name,
+            work_done_progress_params: Default::default(),
+        });
+        Some(cx.background_executor().spawn(async move {
+            let edit = request.await?.unwrap_or_default();
+            Ok(Rename {
+                files: file_edits(edit),
+                encoding,
+            })
+        }))
+    }
+
+    /// Tells the servers files changed on disk (a rename wrote them).
+    pub fn files_changed(&self, paths: &[PathBuf]) {
+        let changes: Vec<lsp::FileEvent> = paths
+            .iter()
+            .filter_map(|path| {
+                Some(lsp::FileEvent::new(
+                    me_lsp::uri_from_path(path)?,
+                    lsp::FileChangeType::CHANGED,
+                ))
+            })
+            .collect();
+        if changes.is_empty() {
+            return;
+        }
+        for key in self.servers.keys() {
+            if let Some(server) = self.live_server(key) {
+                server.notify::<lsp::notification::DidChangeWatchedFiles>(
+                    lsp::DidChangeWatchedFilesParams {
+                        changes: changes.clone(),
+                    },
+                );
+            }
+        }
+    }
+
+    /// The server for `editor` if it has `provider`, with the position of
+    /// `pos` and the text it's in (synced first).
+    fn at(
+        &mut self,
+        editor: &Entity<EditorView>,
+        pos: usize,
+        provider: &str,
+        cx: &mut Context<Self>,
+    ) -> Option<(Arc<Server>, lsp::TextDocumentPositionParams, Rope)> {
+        let id = editor.entity_id();
+        self.sync_doc(id, cx);
+        let (server, target) = self.doc_server(id)?;
+        if !server.supports(provider) {
+            return None;
+        }
+        let rope = editor.read(cx).state.doc.rope().clone();
+        let position = me_lsp::position(&rope, pos, server.encoding());
+        let at = lsp::TextDocumentPositionParams {
+            text_document: lsp::TextDocumentIdentifier { uri: target.uri },
+            position,
+        };
+        Some((server, at, rope))
     }
 
     /// Asks the server of `editor`'s language where the identifier at char
@@ -535,9 +889,10 @@ impl LanguageServers {
         }
         for doc in self.docs.values_mut() {
             if doc.target.as_ref().is_some_and(|t| t.group == group.key) {
-                doc.synced = None;
+                doc.sent = None;
             }
         }
+        self.clear_diagnostics(group.key, cx);
         self.ensure_server(group, cx);
     }
 
@@ -558,9 +913,10 @@ impl LanguageServers {
         entry.status = Status::Stopped("Stopped".into());
         for doc in self.docs.values_mut() {
             if doc.target.as_ref().is_some_and(|t| t.group == group.key) {
-                doc.synced = None;
+                doc.sent = None;
             }
         }
+        self.clear_diagnostics(group.key, cx);
         cx.notify();
     }
 
@@ -579,6 +935,116 @@ impl Drop for LanguageServers {
 }
 
 type Spot = (lsp::Uri, lsp::Position);
+
+fn severity(severity: Option<lsp::DiagnosticSeverity>) -> Severity {
+    match severity {
+        Some(lsp::DiagnosticSeverity::WARNING) => Severity::Warning,
+        Some(lsp::DiagnosticSeverity::INFORMATION) => Severity::Info,
+        Some(lsp::DiagnosticSeverity::HINT) => Severity::Hint,
+        _ => Severity::Error,
+    }
+}
+
+/// A server's diagnostic in a buffer's bytes.
+fn to_diagnostic(rope: &Rope, d: &lsp::Diagnostic, encoding: Encoding) -> Diagnostic {
+    let range = me_lsp::char_range(rope, d.range, encoding);
+    Diagnostic {
+        range: rope.char_to_byte(range.start)..rope.char_to_byte(range.end),
+        severity: severity(d.severity),
+        message: d.message.trim_end().to_string(),
+        source: d.source.clone(),
+        code: d.code.as_ref().map(|code| match code {
+            lsp::NumberOrString::Number(n) => n.to_string(),
+            lsp::NumberOrString::String(s) => s.clone(),
+        }),
+    }
+}
+
+/// A hover's contents as markdown (plain text shown as code).
+fn hover_markdown(contents: lsp::HoverContents) -> String {
+    fn marked(m: lsp::MarkedString) -> String {
+        match m {
+            lsp::MarkedString::String(s) => s,
+            lsp::MarkedString::LanguageString(l) => format!("```{}\n{}\n```", l.language, l.value),
+        }
+    }
+    match contents {
+        lsp::HoverContents::Scalar(m) => marked(m),
+        lsp::HoverContents::Array(ms) => ms
+            .into_iter()
+            .map(marked)
+            .filter(|s| !s.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        lsp::HoverContents::Markup(m) => match m.kind {
+            lsp::MarkupKind::Markdown => m.value,
+            lsp::MarkupKind::PlainText => format!("```\n{}\n```", m.value.trim_end()),
+        },
+    }
+}
+
+/// A workspace edit's text edits, by file. Creating, renaming and deleting
+/// files isn't supported (and not announced), so servers don't send those.
+fn file_edits(edit: lsp::WorkspaceEdit) -> Vec<FileEdit> {
+    let mut files: Vec<FileEdit> = Vec::new();
+    let mut add = |uri: &lsp::Uri, edits: Vec<lsp::TextEdit>| {
+        let Some(path) = me_lsp::path_from_uri(uri) else {
+            return;
+        };
+        match files.iter_mut().find(|f| f.path == path) {
+            Some(file) => file.edits.extend(edits),
+            None => files.push(FileEdit { path, edits }),
+        }
+    };
+    let text_edit = |edit: lsp::OneOf<lsp::TextEdit, lsp::AnnotatedTextEdit>| match edit {
+        lsp::OneOf::Left(edit) => edit,
+        lsp::OneOf::Right(annotated) => annotated.text_edit,
+    };
+    match (edit.document_changes, edit.changes) {
+        (Some(lsp::DocumentChanges::Edits(edits)), _) => {
+            for e in edits {
+                add(
+                    &e.text_document.uri,
+                    e.edits.into_iter().map(text_edit).collect(),
+                );
+            }
+        }
+        (Some(lsp::DocumentChanges::Operations(ops)), _) => {
+            for op in ops {
+                if let lsp::DocumentChangeOperation::Edit(e) = op {
+                    add(
+                        &e.text_document.uri,
+                        e.edits.into_iter().map(text_edit).collect(),
+                    );
+                }
+            }
+        }
+        (None, Some(changes)) => {
+            for (uri, edits) in changes {
+                add(&uri, edits);
+            }
+        }
+        (None, None) => {}
+    }
+    files
+}
+
+/// Server edits as char ranges of `rope`.
+pub fn char_edits(
+    rope: &Rope,
+    edits: &[lsp::TextEdit],
+    encoding: Encoding,
+) -> Vec<(Range<usize>, String)> {
+    edits
+        .iter()
+        .map(|e| {
+            (
+                me_lsp::char_range(rope, e.range, encoding),
+                e.new_text.clone(),
+            )
+        })
+        .collect()
+}
 
 fn definition_spots(response: Option<lsp::GotoDefinitionResponse>) -> Vec<Spot> {
     match response {

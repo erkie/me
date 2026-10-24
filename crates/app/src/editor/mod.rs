@@ -2,7 +2,9 @@
 //! and IME input, loads and saves the file, and keeps the syntax tree in
 //! sync in the background. Painting lives in [`element`].
 
+pub mod diagnostics;
 pub mod element;
+pub mod hover;
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -24,10 +26,16 @@ use me_text::{
 use serde::{Deserialize, Serialize};
 
 use crate::actions::*;
+use diagnostics::Diagnostic;
 use element::{EditorElement, LayoutSnapshot, WrapCache};
+use hover::{HoverInfo, HoverState};
 
 /// Files above this size are read on a background thread.
 const SYNC_LOAD_LIMIT: u64 = 2 * 1024 * 1024;
+/// How long the pointer rests on a word before its hover shows.
+const HOVER_DELAY: Duration = Duration::from_millis(400);
+/// How long a hover stays after the pointer leaves it (to reach it).
+const HOVER_GRACE: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EditorEvent {
@@ -37,6 +45,13 @@ pub enum EditorEvent {
     Loaded,
     /// Cmd+click (Ctrl+click elsewhere) on the char at this offset.
     GoToDefinition(usize),
+    /// The pointer rested on (or the keyboard asked about) the identifier
+    /// at this offset: what does the language server know? The answer goes
+    /// to [`EditorView::set_hover_info`] with `id`.
+    Hover {
+        pos: usize,
+        id: u64,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -133,6 +148,13 @@ pub struct EditorView {
     symbols_cache: Option<(u64, Arc<Vec<me_syntax::Symbol>>)>,
     /// The word under the pointer while Cmd is held, drawn as a link.
     pub(crate) hover_link: Option<Range<usize>>,
+    /// Problems from the language server, sorted by position.
+    pub(crate) diagnostics: Vec<Diagnostic>,
+    pub(crate) hover: Option<HoverState>,
+    /// A hover about to show for the pointer, while it stays in this range.
+    hover_timer: Option<(Range<usize>, Task<()>)>,
+    hover_hide: Option<Task<()>>,
+    next_hover_id: u64,
     _subscriptions: Vec<gpui::Subscription>,
 }
 
@@ -153,6 +175,7 @@ impl EditorView {
                 this.blink_task = None;
                 this.cursor_visible = false;
                 this.drag = None;
+                this.hide_hover(cx);
                 cx.notify();
             }),
         ];
@@ -186,6 +209,11 @@ impl EditorView {
             tree_generation: 0,
             symbols_cache: None,
             hover_link: None,
+            diagnostics: Vec::new(),
+            hover: None,
+            hover_timer: None,
+            hover_hide: None,
+            next_hover_id: 0,
             _subscriptions: subscriptions,
         }
     }
@@ -301,6 +329,206 @@ impl EditorView {
             self.hover_link = link;
             cx.notify();
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // Diagnostics and hover
+    // ---------------------------------------------------------------------
+
+    /// Replaces the language server's problems for this buffer.
+    pub fn set_diagnostics(&mut self, mut diagnostics: Vec<Diagnostic>, cx: &mut Context<Self>) {
+        diagnostics.sort_by_key(|d| (d.range.start, d.severity));
+        if diagnostics != self.diagnostics {
+            self.diagnostics = diagnostics;
+            cx.notify();
+        }
+    }
+
+    pub fn diagnostics(&self) -> &[Diagnostic] {
+        &self.diagnostics
+    }
+
+    /// The problems touching the char at `pos`, worst first.
+    pub fn diagnostics_at(&self, pos: usize) -> Vec<Diagnostic> {
+        let rope = self.state.doc.rope();
+        let len = rope.len_chars();
+        let a = rope.char_to_byte(pos.min(len));
+        let b = rope.char_to_byte((pos + 1).min(len));
+        let mut found: Vec<Diagnostic> = self
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                if d.range.is_empty() {
+                    a <= d.range.start && d.range.start <= b
+                } else {
+                    d.range.start < b && d.range.end > a
+                }
+            })
+            .cloned()
+            .collect();
+        found.sort_by_key(|d| d.severity);
+        found
+    }
+
+    /// The chars of a diagnostic (at least one, so it can be pointed at).
+    pub fn diagnostic_chars(&self, diagnostic: &Diagnostic) -> Range<usize> {
+        let rope = self.state.doc.rope();
+        let start = rope.byte_to_char(diagnostic.range.start.min(rope.len_bytes()));
+        let end = rope.byte_to_char(diagnostic.range.end.min(rope.len_bytes()));
+        start..end.max(start + 1).min(rope.len_chars().max(start))
+    }
+
+    /// Shows the hover for `pos`: its problems right away, and asks the
+    /// language server about the identifier there.
+    pub fn show_hover_at(&mut self, pos: usize, sticky: bool, cx: &mut Context<Self>) {
+        let word = self.identifier_at(pos).map(|(range, _)| range);
+        let diagnostics = self.diagnostics_at(pos);
+        let range = match (&word, diagnostics.first()) {
+            (Some(word), _) => word.clone(),
+            (None, Some(d)) => self.diagnostic_chars(d),
+            (None, None) => return,
+        };
+        self.next_hover_id += 1;
+        let id = self.next_hover_id;
+        self.hover = Some(HoverState {
+            id,
+            range,
+            diagnostics,
+            info: None,
+            sticky,
+            inside: false,
+        });
+        self.hover_hide = None;
+        if word.is_some() {
+            cx.emit(EditorEvent::Hover { pos, id });
+        }
+        cx.notify();
+    }
+
+    /// The language server's answer to [`EditorEvent::Hover`].
+    pub fn set_hover_info(&mut self, id: u64, info: Option<HoverInfo>, cx: &mut Context<Self>) {
+        let Some(hover) = self.hover.as_mut().filter(|h| h.id == id) else {
+            return;
+        };
+        if let Some(info) = info {
+            if let Some(range) = info.range.filter(|_| hover.diagnostics.is_empty()) {
+                hover.range = range;
+            }
+            hover.info = Some(info.markdown);
+            cx.notify();
+        }
+    }
+
+    pub fn hide_hover(&mut self, cx: &mut Context<Self>) {
+        self.hover_timer = None;
+        self.hover_hide = None;
+        if self.hover.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// The pointer moved, over the char at `target` (or not over text).
+    pub(crate) fn pointer_moved(&mut self, target: Option<usize>, cx: &mut Context<Self>) {
+        if let Some(hover) = &self.hover {
+            if hover.inside {
+                return;
+            }
+            let range = hover.range.start..hover.range.end.max(hover.range.start + 1);
+            if target.is_some_and(|pos| range.contains(&pos)) {
+                self.hover_hide = None;
+                return;
+            }
+            if !hover.sticky {
+                self.schedule_hover_hide(cx);
+            }
+        }
+        let Some(pos) = target else {
+            self.hover_timer = None;
+            return;
+        };
+        if self
+            .hover_timer
+            .as_ref()
+            .is_some_and(|(range, _)| range.contains(&pos))
+        {
+            return;
+        }
+        let area = self
+            .identifier_at(pos)
+            .map(|(range, _)| range)
+            .unwrap_or(pos..pos + 1);
+        let task = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(HOVER_DELAY).await;
+            this.update(cx, |this, cx| {
+                this.hover_timer = None;
+                if this.drag.is_none() {
+                    this.show_hover_at(pos, false, cx);
+                }
+            })
+            .ok();
+        });
+        self.hover_timer = Some((area, task));
+    }
+
+    /// The pointer entered or left the popover.
+    pub(crate) fn popover_hovered(&mut self, hovered: bool, cx: &mut Context<Self>) {
+        let Some(hover) = self.hover.as_mut() else {
+            return;
+        };
+        hover.inside = hovered;
+        if hovered {
+            self.hover_hide = None;
+        } else if !hover.sticky {
+            self.schedule_hover_hide(cx);
+        }
+    }
+
+    fn schedule_hover_hide(&mut self, cx: &mut Context<Self>) {
+        if self.hover_hide.is_some() {
+            return;
+        }
+        self.hover_hide = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(HOVER_GRACE).await;
+            this.update(cx, |this, cx| {
+                this.hover_hide = None;
+                if this.hover.as_ref().is_some_and(|h| !h.inside) {
+                    this.hover = None;
+                    cx.notify();
+                }
+            })
+            .ok();
+        }));
+    }
+
+    /// A cursor on every occurrence of the word at the cursor.
+    pub fn select_all_occurrences(&mut self, cx: &mut Context<Self>) {
+        self.motion(cx, |s| {
+            s.select_all_occurrences();
+        });
+    }
+
+    /// Replaces ranges of chars as one undoable step (a rename), keeping
+    /// the cursors where they were relative to the text.
+    pub fn apply_edits(&mut self, edits: Vec<(Range<usize>, String)>, cx: &mut Context<Self>) {
+        if self.read_only || self.loading || edits.is_empty() {
+            return;
+        }
+        let changes = me_text::ChangeSet::new(
+            edits
+                .into_iter()
+                .map(|(range, text)| me_text::Change::new(range.start, range.end, text))
+                .collect(),
+        );
+        let before = self.state.selections().clone();
+        let mut after = before.clone();
+        after.map(&changes);
+        self.state.doc.seal_undo();
+        self.state
+            .doc
+            .apply(changes, before, &mut after, EditKind::Other);
+        self.state.doc.seal_undo();
+        self.state.set_selections(after);
+        self.did_change(cx);
     }
 
     /// What a session needs to bring this editor back.
@@ -488,12 +716,22 @@ impl EditorView {
     // Change plumbing
     // ---------------------------------------------------------------------
 
-    fn did_change(&mut self, cx: &mut Context<Self>) {
+    /// Brings the syntax tree and diagnostics up to date with the edits
+    /// made since the last call; returns whether there were any.
+    fn take_edits(&mut self) -> bool {
         let edits = self.state.doc.take_edits();
-        if !edits.is_empty() {
-            if let Some(syntax) = &mut self.syntax {
-                syntax.edit(&edits);
-            }
+        if edits.is_empty() {
+            return false;
+        }
+        if let Some(syntax) = &mut self.syntax {
+            syntax.edit(&edits);
+        }
+        diagnostics::map_through(&mut self.diagnostics, &edits);
+        true
+    }
+
+    fn did_change(&mut self, cx: &mut Context<Self>) {
+        if self.take_edits() {
             self.schedule_parse(cx);
             cx.emit(EditorEvent::Changed);
         }
@@ -508,6 +746,7 @@ impl EditorView {
 
     fn did_move(&mut self, cx: &mut Context<Self>) {
         self.autoscroll = Some(Autoscroll::Fit);
+        self.hide_hover(cx);
         self.restart_blink(cx);
         cx.notify();
     }
@@ -733,10 +972,7 @@ impl EditorView {
         self.state.set_selections(sels);
         self.state.doc.mark_saved();
         self.was_dirty = false;
-        let edits = self.state.doc.take_edits();
-        if let Some(syntax) = &mut self.syntax {
-            syntax.edit(&edits);
-        }
+        self.take_edits();
         self.schedule_parse(cx);
         cx.emit(EditorEvent::Changed);
         cx.notify();
@@ -899,6 +1135,7 @@ impl EditorView {
     }
 
     pub(crate) fn scroll_by(&mut self, delta: Point<Pixels>, cx: &mut Context<Self>) {
+        self.hide_hover(cx);
         self.scroll.x = (self.scroll.x - delta.x).max(px(0.));
         self.pending_scroll -= f32::from(delta.y) as f64;
         self.autoscroll = None;
@@ -934,6 +1171,8 @@ impl EditorView {
             menu = menu
                 .menu("Go to Definition", Box::new(GoToDefinition))
                 .menu("Find References", Box::new(FindReferences))
+                .menu_with_disabled("Rename Symbol", self.read_only, Box::new(RenameSymbol))
+                .menu("Show Hover", Box::new(ShowHover))
                 .separator();
         }
         let mut menu = menu
@@ -1094,11 +1333,9 @@ impl gpui::EntityInputHandler for EditorView {
                 self.state.set_selections(SelectionSet::new(sels, primary));
             }
         }
-        let edits = self.state.doc.take_edits();
-        if let Some(syntax) = &mut self.syntax {
-            syntax.edit(&edits);
-        }
+        self.take_edits();
         self.schedule_parse(cx);
+        cx.emit(EditorEvent::Changed);
         self.marked = if text.is_empty() {
             None
         } else {
@@ -1317,7 +1554,9 @@ impl Render for EditorView {
                 })
             }))
             .on_action(cx.listener(|this, _: &Cancel, _, cx| {
-                if this.state.selections().len() > 1
+                if this.hover.as_ref().is_some_and(HoverState::is_visible) {
+                    this.hide_hover(cx);
+                } else if this.state.selections().len() > 1
                     || !this.state.selections().primary().is_empty()
                 {
                     this.motion(cx, |s| s.collapse_selections());
@@ -1337,6 +1576,10 @@ impl Render for EditorView {
             }))
             .on_action(cx.listener(|this, action: &SetIndentation, _, cx| {
                 this.set_indentation(action.hard_tabs, action.width, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ShowHover, _, cx| {
+                let head = this.state.selections().primary().head;
+                this.show_hover_at(head, true, cx);
             }))
             .child(EditorElement::new(cx.entity()))
     }
@@ -1398,7 +1641,7 @@ fn load_file(path: &Path) -> Loaded {
     }
 }
 
-fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     let dir = path
         .parent()

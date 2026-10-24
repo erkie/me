@@ -33,6 +33,10 @@ pub struct Palette {
     pub overlay_bg: Hsla,
     /// Background of code in the markdown preview.
     pub code_bg: Hsla,
+    /// Problems from language servers.
+    pub error: Hsla,
+    pub warning: Hsla,
+    pub info: Hsla,
     syntax: SyntaxColors,
 }
 
@@ -91,6 +95,9 @@ impl Palette {
             modified_dot: rgb(0x6e6e73).into(),
             overlay_bg: rgb(0xfbfbfd).into(),
             code_bg: rgb(0xf4f4f6).into(),
+            error: rgb(0xe0352b).into(),
+            warning: rgb(0xc27c00).into(),
+            info: rgb(0x007aff).into(),
             syntax: SyntaxColors {
                 comment: rgb(0x707f8c).into(),
                 keyword: rgb(0x9b2393).into(),
@@ -144,6 +151,9 @@ impl Palette {
             modified_dot: rgb(0xa1a1a6).into(),
             overlay_bg: rgb(0x2c2c31).into(),
             code_bg: rgb(0x2a2a30).into(),
+            error: rgb(0xff5a50).into(),
+            warning: rgb(0xf5b83d).into(),
+            info: rgb(0x409cff).into(),
             syntax: SyntaxColors {
                 comment: rgb(0x7f8c98).into(),
                 keyword: rgb(0xfc5fa3).into(),
@@ -173,7 +183,6 @@ impl Palette {
         }
     }
 
-    /// Error text.
     /// The color of a symbol kind's badge (pickers, path bar).
     pub fn symbol(&self, kind: me_syntax::SymbolKind) -> Hsla {
         use me_syntax::SymbolKind::*;
@@ -189,6 +198,7 @@ impl Palette {
         }
     }
 
+    /// Error text.
     pub fn danger(&self) -> Hsla {
         self.syntax.removed
     }

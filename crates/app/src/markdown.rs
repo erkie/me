@@ -113,6 +113,20 @@ impl MarkdownPreview {
     }
 }
 
+/// One highlighter per appearance, for small views built each frame (the
+/// hover popover): code blocks keep their highlights while it's the same.
+pub(crate) fn shared_code_highlighter(palette: &Palette) -> CodeHighlighter {
+    thread_local! {
+        static HIGHLIGHTERS: std::cell::RefCell<[Option<CodeHighlighter>; 2]> =
+            const { std::cell::RefCell::new([None, None]) };
+    }
+    HIGHLIGHTERS.with_borrow_mut(|cache| {
+        cache[palette.is_dark as usize]
+            .get_or_insert_with(|| code_highlighter(palette.clone()))
+            .clone()
+    })
+}
+
 /// Highlights fenced code with the editor's own grammars and colors.
 fn code_highlighter(palette: Palette) -> CodeHighlighter {
     Arc::new(move |block: &CodeBlock| {

@@ -18,6 +18,7 @@ mod mermaid;
 mod palette;
 mod picker;
 mod platform;
+mod rename;
 mod search_panel;
 mod session;
 mod settings;

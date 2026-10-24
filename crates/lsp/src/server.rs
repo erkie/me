@@ -21,6 +21,13 @@ use serde_json::{Value, json};
 
 use crate::{Encoding, uri_from_path};
 
+/// What a server tells the app, as it happens.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Event {
+    Status(Status),
+    Diagnostics(lsp::PublishDiagnosticsParams),
+}
+
 /// What a server is doing, for the status bar.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Status {
@@ -44,6 +51,15 @@ enum Outgoing {
         message: Value,
         pointer: &'static str,
         text: Rope,
+    },
+    /// A `didChange` from `old` to `new`: only the changed range when
+    /// `incremental` (worked out on the writer thread), else all of `new`.
+    Change {
+        uri: lsp::Uri,
+        version: i32,
+        old: Option<Rope>,
+        new: Rope,
+        incremental: Option<Encoding>,
     },
 }
 
@@ -87,21 +103,22 @@ pub struct Server {
     next_id: AtomicI64,
     alive: Arc<AtomicBool>,
     progress: Arc<Mutex<Progress>>,
-    status: mpsc::UnboundedSender<Status>,
+    events: mpsc::UnboundedSender<Event>,
     child: Mutex<Option<Child>>,
     encoding: Mutex<Encoding>,
     capabilities: Mutex<Value>,
 }
 
 impl Server {
-    /// Starts `command` in `root`. Status changes are sent on `status`.
+    /// Starts `command` in `root`. Status changes and diagnostics are sent
+    /// on `events`.
     pub fn spawn(
         name: &str,
         command: &Path,
         args: &[String],
         root: &Path,
         path_env: Option<&OsStr>,
-        status: mpsc::UnboundedSender<Status>,
+        events: mpsc::UnboundedSender<Event>,
     ) -> anyhow::Result<Arc<Self>> {
         let mut cmd = Command::new(command);
         cmd.args(args)
@@ -134,7 +151,7 @@ impl Server {
                     }
                 })?;
         }
-        let server = Self::with_transport(name, stdout, stdin, status, Some(log));
+        let server = Self::with_transport(name, stdout, stdin, events, Some(log));
         *server.child.lock().unwrap() = Some(child);
         Ok(server)
     }
@@ -144,7 +161,7 @@ impl Server {
         name: &str,
         reader: impl Read + Send + 'static,
         writer: impl Write + Send + 'static,
-        status: mpsc::UnboundedSender<Status>,
+        events: mpsc::UnboundedSender<Event>,
         stderr_log: Option<Arc<Mutex<Vec<String>>>>,
     ) -> Arc<Self> {
         let (outgoing, queue) = crossbeam_channel::unbounded::<Outgoing>();
@@ -169,6 +186,33 @@ impl Server {
                             }
                             message
                         }
+                        Outgoing::Change {
+                            uri,
+                            version,
+                            old,
+                            new,
+                            incremental,
+                        } => {
+                            let change = match (old, incremental) {
+                                (Some(old), Some(encoding)) => {
+                                    match crate::diff(&old, &new, encoding) {
+                                        Some((range, text)) => {
+                                            json!({ "range": range, "text": text })
+                                        }
+                                        None => continue,
+                                    }
+                                }
+                                _ => json!({ "text": new.to_string() }),
+                            };
+                            json!({
+                                "jsonrpc": "2.0",
+                                "method": "textDocument/didChange",
+                                "params": {
+                                    "textDocument": { "uri": uri, "version": version },
+                                    "contentChanges": [change],
+                                },
+                            })
+                        }
                     };
                     let body = serde_json::to_vec(&value).unwrap_or_default();
                     let header = format!("Content-Length: {}\r\n\r\n", body.len());
@@ -188,13 +232,13 @@ impl Server {
             let pending = pending.clone();
             let alive = alive.clone();
             let progress = progress.clone();
-            let status = status.clone();
+            let events = events.clone();
             std::thread::Builder::new()
                 .name(format!("{name} reader"))
                 .spawn(move || {
                     let mut reader = BufReader::new(reader);
                     while let Ok(Some(message)) = read_message(&mut reader) {
-                        handle_message(message, &outgoing, &pending, &progress, &status);
+                        handle_message(message, &outgoing, &pending, &progress, &events);
                     }
                     alive.store(false, Ordering::Release);
                     for (_, reply) in pending.lock().unwrap().drain() {
@@ -203,7 +247,7 @@ impl Server {
                     let detail = stderr_log
                         .and_then(|log| log.lock().unwrap().last().cloned())
                         .unwrap_or_default();
-                    let _ = status.unbounded_send(Status::Stopped(detail));
+                    let _ = events.unbounded_send(Event::Status(Status::Stopped(detail)));
                 })
                 .ok();
         }
@@ -215,7 +259,7 @@ impl Server {
             next_id: AtomicI64::new(1),
             alive,
             progress,
-            status,
+            events,
             child: Mutex::new(None),
             encoding: Mutex::new(Encoding::Utf16),
             capabilities: Mutex::new(Value::Null),
@@ -243,6 +287,25 @@ impl Server {
         }
     }
 
+    /// Whether a nested capability is on (`/renameProvider/prepareProvider`).
+    pub fn supports_at(&self, pointer: &str) -> bool {
+        match self.capabilities.lock().unwrap().pointer(pointer) {
+            None | Some(Value::Null) | Some(Value::Bool(false)) => false,
+            Some(_) => true,
+        }
+    }
+
+    /// Whether the server takes edits as changed ranges (else whole text).
+    fn incremental_sync(&self) -> bool {
+        let capabilities = self.capabilities.lock().unwrap();
+        let sync = capabilities.get("textDocumentSync");
+        let kind = match sync {
+            Some(Value::Object(sync)) => sync.get("change"),
+            other => other,
+        };
+        kind.and_then(Value::as_u64) == Some(2)
+    }
+
     /// The `initialize` handshake. The server is usable once it returns.
     pub async fn initialize(&self, root: &Path, options: Option<Value>) -> anyhow::Result<()> {
         let root_uri = uri_from_path(root).context("folder path is not a valid URI")?;
@@ -260,9 +323,19 @@ impl Server {
             "capabilities": {
                 "general": { "positionEncodings": ["utf-8", "utf-16"] },
                 "window": { "workDoneProgress": true },
-                "workspace": { "configuration": true, "workspaceFolders": true },
+                "workspace": {
+                    "configuration": true,
+                    "workspaceFolders": true,
+                    "workspaceEdit": { "documentChanges": true },
+                },
                 "textDocument": {
                     "synchronization": { "didSave": true },
+                    "hover": { "contentFormat": ["markdown", "plaintext"] },
+                    "rename": { "prepareSupport": true },
+                    "publishDiagnostics": {
+                        "versionSupport": true,
+                        "tagSupport": { "valueSet": [1, 2] },
+                    },
                     "definition": { "linkSupport": true },
                     "declaration": { "linkSupport": true },
                     "typeDefinition": { "linkSupport": true },
@@ -283,7 +356,7 @@ impl Server {
             progress.initialized = true;
             progress.status()
         };
-        let _ = self.status.unbounded_send(status);
+        let _ = self.events.unbounded_send(Event::Status(status));
         Ok(())
     }
 
@@ -339,20 +412,16 @@ impl Server {
         });
     }
 
-    /// Sends the whole new text (every server accepts that, whatever sync
-    /// kind it prefers).
-    pub fn did_change(&self, uri: &lsp::Uri, version: i32, text: Rope) {
-        let _ = self.outgoing.send(Outgoing::WithText {
-            message: json!({
-                "jsonrpc": "2.0",
-                "method": "textDocument/didChange",
-                "params": {
-                    "textDocument": { "uri": uri, "version": version },
-                    "contentChanges": [{ "text": "" }],
-                },
-            }),
-            pointer: "/params/contentChanges/0/text",
-            text,
+    /// Tells the server a buffer went from `old` (the text it has) to
+    /// `new`: just the changed range if it takes those, else the whole text.
+    pub fn did_change(&self, uri: &lsp::Uri, version: i32, old: Option<Rope>, new: Rope) {
+        let incremental = self.incremental_sync().then(|| self.encoding());
+        let _ = self.outgoing.send(Outgoing::Change {
+            uri: uri.clone(),
+            version,
+            old,
+            new,
+            incremental,
         });
     }
 
@@ -455,7 +524,7 @@ fn handle_message(
     outgoing: &crossbeam_channel::Sender<Outgoing>,
     pending: &Mutex<HashMap<i64, Reply>>,
     progress: &Mutex<Progress>,
-    status: &mpsc::UnboundedSender<Status>,
+    events: &mpsc::UnboundedSender<Event>,
 ) {
     let method = message.get("method").and_then(Value::as_str);
     let id = message.get("id").cloned();
@@ -509,6 +578,15 @@ fn handle_message(
             };
             let _ = outgoing.send(Outgoing::Message(reply));
         }
+        (Some("textDocument/publishDiagnostics"), None) => {
+            if let Some(params) = message
+                .get("params")
+                .cloned()
+                .and_then(|p| serde_json::from_value(p).ok())
+            {
+                let _ = events.unbounded_send(Event::Diagnostics(params));
+            }
+        }
         (Some("$/progress"), None) => {
             let Some(params) = message.get("params") else {
                 return;
@@ -554,7 +632,7 @@ fn handle_message(
                 }
                 progress.status()
             };
-            let _ = status.unbounded_send(new_status);
+            let _ = events.unbounded_send(Event::Status(new_status));
         }
         _ => {}
     }
@@ -583,7 +661,7 @@ mod tests {
         }
     }
 
-    fn connect() -> (Arc<Server>, Fake, mpsc::UnboundedReceiver<Status>) {
+    fn connect() -> (Arc<Server>, Fake, mpsc::UnboundedReceiver<Event>) {
         let (client_in, server_out) = std::io::pipe().unwrap();
         let (server_in, client_out) = std::io::pipe().unwrap();
         let (tx, rx) = mpsc::unbounded();
@@ -615,12 +693,25 @@ mod tests {
             assert_eq!(answer["id"], "c1");
             assert_eq!(answer["result"], json!([null, null]));
             fake.send(json!({ "jsonrpc": "2.0", "id": init["id"], "result": {
-                "capabilities": { "positionEncoding": "utf-8", "definitionProvider": true } } }));
+                "capabilities": { "positionEncoding": "utf-8", "definitionProvider": true,
+                    "textDocumentSync": { "openClose": true, "change": 2 } } } }));
             assert_eq!(fake.recv()["method"], "initialized");
 
             let open = fake.recv();
             assert_eq!(open["method"], "textDocument/didOpen");
             assert_eq!(open["params"]["textDocument"]["text"], "fn main() {}\n");
+            // Only the edit travels.
+            let change = fake.recv();
+            assert_eq!(change["params"]["textDocument"]["version"], 2);
+            assert_eq!(
+                change["params"]["contentChanges"],
+                json!([{ "range": { "start": { "line": 0, "character": 11 },
+                    "end": { "line": 0, "character": 11 } }, "text": " 1 " }])
+            );
+            fake.send(json!({ "jsonrpc": "2.0", "method": "textDocument/publishDiagnostics",
+                "params": { "uri": "file:///tmp/main.rs", "version": 2, "diagnostics": [{
+                    "range": { "start": { "line": 0, "character": 3 }, "end": { "line": 0, "character": 7 } },
+                    "severity": 1, "message": "oops" }] } }));
 
             fake.send(json!({ "jsonrpc": "2.0", "method": "$/progress",
                 "params": { "token": 7, "value": { "kind": "begin", "title": "Indexing", "percentage": 10 } } }));
@@ -645,7 +736,11 @@ mod tests {
         assert!(!server.supports("referencesProvider"));
 
         let uri: lsp::Uri = "file:///tmp/main.rs".parse().unwrap();
-        server.did_open(&uri, "rust", 1, Rope::from_str("fn main() {}\n"));
+        let text = Rope::from_str("fn main() {}\n");
+        server.did_open(&uri, "rust", 1, text.clone());
+        let mut edited = text.clone();
+        edited.insert(11, " 1 ");
+        server.did_change(&uri, 2, Some(text), edited);
         let params = lsp::GotoDefinitionParams {
             text_document_position_params: lsp::TextDocumentPositionParams {
                 text_document: lsp::TextDocumentIdentifier { uri },
@@ -664,22 +759,29 @@ mod tests {
             other => panic!("unexpected {other:?}"),
         }
 
-        let statuses: Vec<Status> = futures::executor::block_on(async {
+        let events: Vec<Event> = futures::executor::block_on(async {
             let mut seen = Vec::new();
             while let Some(s) = status.next().await {
                 seen.push(s);
-                if seen.len() == 3 {
+                if seen.len() == 4 {
                     break;
                 }
             }
             seen
         });
+        assert_eq!(events[0], Event::Status(Status::Ready));
+        match &events[1] {
+            Event::Diagnostics(d) => {
+                assert_eq!(d.version, Some(2));
+                assert_eq!(d.diagnostics[0].message, "oops");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
         assert_eq!(
-            statuses,
-            vec![
-                Status::Ready,
-                Status::Busy("Indexing 10%".into()),
-                Status::Ready
+            events[2..],
+            [
+                Event::Status(Status::Busy("Indexing 10%".into())),
+                Event::Status(Status::Ready)
             ]
         );
 

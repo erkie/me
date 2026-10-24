@@ -1,5 +1,6 @@
 //! A fuzzy list overlay, like the command palette, for choosing among
-//! symbols and locations (Cmd+R, Cmd+Shift+R, ambiguous go to definition).
+//! symbols and locations (Cmd+R, Cmd+Shift+R, ambiguous go to definition,
+//! problems).
 
 use gpui::{
     App, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable, HighlightStyle,
@@ -25,10 +26,54 @@ pub struct PickerItem {
     /// Muted text after the label (a path, a kind).
     pub detail: SharedString,
     pub icon: Option<FileIcon>,
-    /// A symbol kind badge, instead of a file icon.
-    pub symbol: Option<SymbolKind>,
+    /// A small colored mark before the label (a symbol kind, a severity).
+    pub badge: Option<Badge>,
     /// Indentation level (nested symbols).
     pub depth: usize,
+}
+
+#[derive(Clone)]
+pub struct Badge {
+    pub glyph: &'static str,
+    pub color: gpui::Hsla,
+}
+
+impl Badge {
+    /// A symbol kind's letter, like VS Code's symbol icons.
+    pub fn symbol(kind: SymbolKind, palette: &theme::Palette) -> Self {
+        let glyph = match kind {
+            SymbolKind::Function => "ƒ",
+            SymbolKind::Method => "m",
+            SymbolKind::Class => "C",
+            SymbolKind::Interface => "I",
+            SymbolKind::Module => "M",
+            SymbolKind::Macro => "!",
+            SymbolKind::Constant => "π",
+            SymbolKind::Type => "T",
+            SymbolKind::Impl => "i",
+            SymbolKind::Heading => "#",
+            SymbolKind::Other => "·",
+        };
+        Self {
+            glyph,
+            color: palette.symbol(kind),
+        }
+    }
+
+    pub fn element(&self) -> gpui::Div {
+        div()
+            .flex_none()
+            .size(px(16.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(4.))
+            .bg(self.color.opacity(0.16))
+            .text_color(self.color)
+            .text_size(px(11.))
+            .font_weight(gpui::FontWeight::BOLD)
+            .child(self.glyph)
+    }
 }
 
 pub enum PickerEvent {
@@ -274,9 +319,7 @@ fn render_row(
         .text_color(palette.text)
         .when(selected, |el| el.bg(palette.row_selected))
         .when(!selected, |el| el.hover(|s| s.bg(palette.hover)))
-        .when_some(item.symbol, |el, kind| {
-            el.child(symbol_badge(kind, palette))
-        })
+        .when_some(item.badge.as_ref(), |el, badge| el.child(badge.element()))
         .when_some(item.icon.clone(), |el, icon| {
             el.child(
                 svg()
@@ -315,34 +358,4 @@ fn render_row(
             this.confirm(cx);
         }))
         .into_any_element()
-}
-
-/// A small colored letter for a symbol kind, like VS Code's symbol icons.
-pub fn symbol_badge(kind: SymbolKind, palette: &theme::Palette) -> gpui::Div {
-    let glyph = match kind {
-        SymbolKind::Function => "ƒ",
-        SymbolKind::Method => "m",
-        SymbolKind::Class => "C",
-        SymbolKind::Interface => "I",
-        SymbolKind::Module => "M",
-        SymbolKind::Macro => "!",
-        SymbolKind::Constant => "π",
-        SymbolKind::Type => "T",
-        SymbolKind::Impl => "i",
-        SymbolKind::Heading => "#",
-        SymbolKind::Other => "·",
-    };
-    let color = palette.symbol(kind);
-    div()
-        .flex_none()
-        .size(px(16.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(4.))
-        .bg(color.opacity(0.16))
-        .text_color(color)
-        .text_size(px(11.))
-        .font_weight(gpui::FontWeight::BOLD)
-        .child(glyph)
 }

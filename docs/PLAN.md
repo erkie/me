@@ -385,14 +385,27 @@ their whole job, and they are what VS Code and Zed run too. Two tiers:
    JSON-RPC over stdio (`lsp-types`), with a writer thread so sending a
    big buffer never blocks the UI. A server starts the first time a file
    of its language opens in a folder (found on the login shell's `PATH`,
-   overridable in `settings.json`); open buffers sync as whole text 250 ms
-   after an edit and right before a request (incremental sync from our
-   `ByteEdit`s is a later optimization); positions are UTF-8 when the
-   server agrees, else UTF-16. Cmd+click/F12 ask `textDocument/definition`
-   and Shift+F12 `textDocument/references`, falling back to tier 1 when
-   there's no server, it's starting, or it takes over 4 s. The status bar
-   shows `$/progress` and offers restart/stop. Hover, rename and
-   diagnostics can follow.
+   overridable in `settings.json`); open buffers sync 250 ms after an
+   edit and right before a request, as the one range that changed (worked
+   out on the writer thread by comparing the text the server has with the
+   new text) for servers that take incremental changes; positions are
+   UTF-8 when the server agrees, else UTF-16. Cmd+click/F12 ask
+   `textDocument/definition` and Shift+F12 `textDocument/references`,
+   falling back to tier 1 when there's no server, it's starting, or it
+   takes over 4 s. The status bar shows `$/progress` and offers
+   restart/stop.
+3. **Hover, diagnostics and rename** (done). Problems from
+   `publishDiagnostics` are wavy underlines (and colored line numbers),
+   kept in byte offsets that move with each edit until the server sends
+   new ones; stale versions are dropped. The status bar counts errors and
+   warnings in the folder (click, or Cmd+Shift+M, for the list); F8 /
+   Shift+F8 step through them. Resting the pointer on a word (or Cmd+I)
+   shows a popover with its problems and the server's `textDocument/hover`
+   markdown, code highlighted with our grammars. F2 renames with
+   `prepareRename` and `rename`: open files get one undoable edit (saved
+   if they had no other changes, like VS Code), closed files are edited on
+   disk and announced with `didChangeWatchedFiles`. Without a server, F2
+   puts a cursor on each occurrence in the file.
 
 Language servers can use a lot of memory (rust-analyzer: gigabytes), so
 they only run while a window has files of their language open and stop

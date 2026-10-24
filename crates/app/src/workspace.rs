@@ -11,22 +11,24 @@ use me_syntax::SymbolKind;
 use gpui::{
     AnyElement, App, AppContext, ClickEvent, Context, CursorStyle, Entity, FocusHandle, Focusable,
     InteractiveElement, IntoElement, KeyContext, MouseButton, MouseDownEvent, MouseMoveEvent,
-    ParentElement, PromptLevel, Render, SharedString, StatefulInteractiveElement, Styled,
-    Subscription, Task, Window, div, prelude::FluentBuilder, px, svg,
+    ParentElement, Pixels, Point, PromptLevel, Render, SharedString, StatefulInteractiveElement,
+    Styled, Subscription, Task, Window, anchored, deferred, div, prelude::FluentBuilder, px, svg,
 };
 
 use crate::actions::*;
 use crate::app_state;
+use crate::editor::diagnostics::Severity;
 use crate::editor::{EditorEvent, EditorView};
 use crate::file_tree::{FileTree, FileTreeEvent};
 use crate::find_bar::{FindBar, FindBarEvent};
 use crate::finder::{FinderEvent, FinderView};
 use crate::goto_line::{GoToLineEvent, GoToLinePrompt};
 use crate::image_preview::{ImagePreview, is_image, is_svg};
-use crate::lsp::{LanguageServers, Query, Target};
+use crate::lsp::{FileEdit, LanguageServers, Query, Target};
 use crate::markdown::{MarkdownEvent, MarkdownPreview, is_markdown};
 use crate::palette::{CommandPalette, PaletteEvent};
-use crate::picker::{Picker, PickerEvent, PickerItem};
+use crate::picker::{Badge, Picker, PickerEvent, PickerItem};
+use crate::rename::{RenameEvent, RenamePrompt};
 use crate::search_panel::{SearchPanel, SearchPanelEvent};
 use crate::session;
 use crate::symbols::{self, Location, SymbolIndex};
@@ -191,6 +193,10 @@ pub struct Workspace {
     picker_return: Option<FocusHandle>,
     /// Where each picker item goes.
     picker_targets: Vec<Location>,
+    /// The picker lists problems: show the one picked.
+    picker_problems: bool,
+    rename: Entity<RenamePrompt>,
+    rename_target: Option<RenameTarget>,
     /// Go back / forward through jumps (go to definition, symbol pickers).
     nav_back: Vec<Location>,
     nav_forward: Vec<Location>,
@@ -198,6 +204,16 @@ pub struct Workspace {
     flash: Option<SharedString>,
     flash_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// A rename being typed.
+struct RenameTarget {
+    editor: Entity<EditorView>,
+    /// The char the rename was asked at.
+    pos: usize,
+    old: String,
+    /// Where the box goes (under the name), if the name is on screen.
+    anchor: Option<Point<Pixels>>,
 }
 
 impl Focusable for Workspace {
@@ -212,9 +228,11 @@ impl Workspace {
         let go_to_line = cx.new(|cx| GoToLinePrompt::new(window, cx));
         let palette = cx.new(|cx| CommandPalette::new(window, cx));
         let picker = cx.new(|cx| Picker::new(window, cx));
+        let rename = cx.new(|cx| RenamePrompt::new(window, cx));
         let mut subscriptions = vec![
             cx.subscribe_in(&palette, window, Self::on_palette_event),
             cx.subscribe_in(&picker, window, Self::on_picker_event),
+            cx.subscribe_in(&rename, window, Self::on_rename_event),
             cx.subscribe_in(&find_bar, window, Self::on_find_bar_event),
             cx.subscribe_in(
                 &go_to_line,
@@ -280,6 +298,9 @@ impl Workspace {
             picker_open: false,
             picker_return: None,
             picker_targets: Vec::new(),
+            picker_problems: false,
+            rename,
+            rename_target: None,
             nav_back: Vec::new(),
             nav_forward: Vec::new(),
             flash: None,
@@ -588,7 +609,9 @@ impl Workspace {
             return;
         };
         self.pending_definition = Some(cx.spawn_in(window, async move |this, cx| {
-            let targets = wait_for_server(&this, request, name, cx).await;
+            let targets = wait_for_server(&this, request, name, cx)
+                .await
+                .and_then(Result::ok);
             this.update_in(cx, |this, window, cx| {
                 this.pending_definition = None;
                 let targets = match targets {
@@ -676,7 +699,7 @@ impl Workspace {
                     },
                     detail: format!("{}:{}", self.relative_path(&t.path), t.line + 1).into(),
                     icon: Some(crate::file_icons::for_name(&file, is_dark)),
-                    symbol: None,
+                    badge: None,
                     depth: 0,
                 }
             })
@@ -831,6 +854,7 @@ impl Workspace {
             self.picker_return = window.focused(cx);
         }
         self.picker_targets = targets;
+        self.picker_problems = false;
         self.picker_open = true;
         self.picker
             .update(cx, |p, cx| p.show(placeholder, items, initial, window, cx));
@@ -853,6 +877,9 @@ impl Workspace {
             && let Some(target) = self.picker_targets.get(*ix).cloned()
         {
             self.jump_to(target, window, cx);
+            if self.picker_problems {
+                self.show_problem_at_cursor(cx);
+            }
         }
         cx.notify();
     }
@@ -871,7 +898,7 @@ impl Workspace {
                 label: SharedString::from(l.name.to_string()),
                 detail: format!("{}:{}", self.relative_path(&l.path), l.line + 1).into(),
                 icon: None,
-                symbol: Some(l.kind),
+                badge: Some(Badge::symbol(l.kind, theme::palette(cx))),
                 depth: 0,
             })
             .collect();
@@ -915,7 +942,7 @@ impl Workspace {
                 label: symbol_label(s).into(),
                 detail: format!("{} · line {}", s.kind.label(), s.line + 1).into(),
                 icon: None,
-                symbol: Some(s.kind),
+                badge: Some(Badge::symbol(s.kind, theme::palette(cx))),
                 depth,
             });
             targets.push(Location {
@@ -972,7 +999,9 @@ impl Workspace {
             return;
         };
         self.pending_definition = Some(cx.spawn_in(window, async move |this, cx| {
-            let targets = wait_for_server(&this, request, name, cx).await;
+            let targets = wait_for_server(&this, request, name, cx)
+                .await
+                .and_then(Result::ok);
             this.update_in(cx, |this, window, cx| {
                 this.pending_definition = None;
                 match targets {
@@ -1003,6 +1032,313 @@ impl Workspace {
         if let Some(editor) = self.active_editor() {
             let head = editor.read(cx).state.selections().primary().head;
             self.go_to_definition(editor, head, window, cx);
+        }
+    }
+
+    /// Asks the language server what to show in `editor`'s hover.
+    fn request_hover(
+        &mut self,
+        editor: Entity<EditorView>,
+        pos: usize,
+        id: u64,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(lsp) = self.lsp.clone() else { return };
+        let Some(request) = lsp.update(cx, |lsp, cx| lsp.hover(&editor, pos, cx)) else {
+            return;
+        };
+        cx.spawn(async move |_, cx| {
+            let info = request.await.ok().flatten();
+            editor.update(cx, |editor, cx| editor.set_hover_info(id, info, cx));
+        })
+        .detach();
+    }
+
+    // ---------------------------------------------------------------------
+    // Rename
+    // ---------------------------------------------------------------------
+
+    /// F2: rename the symbol at the cursor everywhere (the language server
+    /// works out where), or, without a server, every occurrence of the word
+    /// in this file with a cursor each.
+    fn rename_symbol(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editor) = self.active_editor() else {
+            return;
+        };
+        let pos = editor.read(cx).state.selections().primary().head;
+        let Some((_, word)) = editor.read(cx).identifier_at(pos) else {
+            self.flash_message("Nothing to rename here".to_string(), cx);
+            return;
+        };
+        let prepared = self.lsp.clone().and_then(|lsp| {
+            let name = lsp.read(cx).info(&editor)?.name;
+            let task = lsp.update(cx, |lsp, cx| lsp.prepare_rename(&editor, pos, cx))?;
+            Some((task, name))
+        });
+        let Some((prepared, name)) = prepared else {
+            editor.update(cx, |editor, cx| editor.select_all_occurrences(cx));
+            self.flash_message(
+                format!("No language server: editing every {word} in this file"),
+                cx,
+            );
+            return;
+        };
+        self.pending_definition = Some(cx.spawn_in(window, async move |this, cx| {
+            let prepared = wait_for_server(&this, prepared, name, cx).await;
+            this.update_in(cx, |this, window, cx| {
+                this.pending_definition = None;
+                match prepared {
+                    Some(Ok(Some((range, old)))) => {
+                        this.open_rename(editor, range, old, window, cx)
+                    }
+                    Some(Err(err)) => this.flash_message(format!("Can't rename {word}: {err}"), cx),
+                    _ => this.flash_message(format!("Can't rename {word}"), cx),
+                }
+            })
+            .ok();
+        }));
+    }
+
+    /// The new-name box, under the name.
+    fn open_rename(
+        &mut self,
+        editor: Entity<EditorView>,
+        range: std::ops::Range<usize>,
+        old: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let anchor = {
+            let e = editor.read(cx);
+            e.layout.as_ref().and_then(|layout| {
+                let p = layout.point_for_pos(range.start, &e.state)?;
+                Some(gpui::point(p.x - px(8.), p.y + layout.line_height + px(2.)))
+            })
+        };
+        self.rename_target = Some(RenameTarget {
+            editor,
+            pos: range.start,
+            old: old.clone(),
+            anchor,
+        });
+        self.rename
+            .update(cx, |rename, cx| rename.show(&old, window, cx));
+        cx.notify();
+    }
+
+    fn on_rename_event(
+        &mut self,
+        _: &Entity<RenamePrompt>,
+        event: &RenameEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(RenameTarget {
+            editor, pos, old, ..
+        }) = self.rename_target.take()
+        else {
+            return;
+        };
+        cx.notify();
+        if !matches!(event, RenameEvent::Blur) {
+            window.focus(&editor.focus_handle(cx), cx);
+        }
+        let RenameEvent::Rename(new) = event else {
+            return;
+        };
+        if new.is_empty() || *new == old {
+            return;
+        }
+        let new = new.clone();
+        let Some(lsp) = self.lsp.clone() else { return };
+        let Some(request) = lsp.update(cx, |lsp, cx| lsp.rename(&editor, pos, new.clone(), cx))
+        else {
+            self.flash_message(format!("Can't rename {old}"), cx);
+            return;
+        };
+        self.flash_message(format!("Renaming {old} to {new}…"), cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let result = request.await;
+            this.update_in(cx, |this, window, cx| match result {
+                Ok(rename) if rename.files.is_empty() => {
+                    this.flash_message(format!("Nothing to rename for {old}"), cx)
+                }
+                Ok(rename) => {
+                    let count = this.apply_file_edits(rename.files, rename.encoding, window, cx);
+                    let files = if count == 1 { "file" } else { "files" };
+                    this.flash_message(format!("Renamed {old} to {new} in {count} {files}"), cx);
+                }
+                Err(err) => this.flash_message(format!("Rename failed: {err}"), cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Applies a rename: open files get one undoable edit (and are saved if
+    /// they had no other changes, like VS Code), closed ones are edited on
+    /// disk. Returns how many files changed.
+    fn apply_file_edits(
+        &mut self,
+        files: Vec<FileEdit>,
+        encoding: me_lsp::Encoding,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> usize {
+        let mut changed = 0;
+        let mut written = Vec::new();
+        for file in files {
+            let open = self
+                .tabs
+                .iter()
+                .find(|t| t.editor.read(cx).path() == Some(file.path.as_path()))
+                .map(|t| t.editor.clone());
+            match open {
+                Some(editor) => {
+                    let was_clean = !editor.read(cx).is_dirty();
+                    editor.update(cx, |editor, cx| {
+                        let edits =
+                            crate::lsp::char_edits(editor.state.doc.rope(), &file.edits, encoding);
+                        editor.apply_edits(edits, cx);
+                        if was_clean {
+                            editor.save(window, cx).detach();
+                        }
+                    });
+                    changed += 1;
+                }
+                None => match edit_file(&file, encoding) {
+                    Ok(()) => {
+                        changed += 1;
+                        written.push(file.path);
+                    }
+                    Err(err) => self.flash_message(
+                        format!("Could not change {}: {err}", self.relative_path(&file.path)),
+                        cx,
+                    ),
+                },
+            }
+        }
+        if let Some(lsp) = &self.lsp {
+            lsp.read(cx).files_changed(&written);
+        }
+        if let Some(index) = self.symbol_index.clone() {
+            cx.background_executor()
+                .spawn(async move {
+                    for path in written.iter().filter(|p| symbols::indexable(p)) {
+                        if let Ok(text) = std::fs::read_to_string(path) {
+                            index.update(path, &text);
+                        }
+                    }
+                })
+                .detach();
+        }
+        changed
+    }
+
+    // ---------------------------------------------------------------------
+    // Problems
+    // ---------------------------------------------------------------------
+
+    /// Cmd+Shift+M: every problem in the folder.
+    fn show_problems(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let problems = self
+            .lsp
+            .as_ref()
+            .map(|lsp| lsp.read(cx).problems(cx))
+            .unwrap_or_default();
+        if problems.is_empty() {
+            self.flash_message("No problems".to_string(), cx);
+            return;
+        }
+        let palette = theme::palette(cx).clone();
+        // Errors first, then by file.
+        let mut problems = problems;
+        problems.sort_by_key(|p| p.severity);
+        let items = problems
+            .iter()
+            .map(|p| {
+                let message: String = p
+                    .message
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .chars()
+                    .take(160)
+                    .collect();
+                PickerItem {
+                    label: message.into(),
+                    detail: format!("{}:{}", self.relative_path(&p.path), p.line + 1).into(),
+                    icon: None,
+                    badge: Some(crate::editor::hover::severity_badge(p.severity, &palette)),
+                    depth: 0,
+                }
+            })
+            .collect();
+        let targets = problems
+            .iter()
+            .map(|p| Location {
+                path: p.path.clone(),
+                name: Arc::from(""),
+                kind: SymbolKind::Other,
+                line: p.line,
+                col: p.col,
+            })
+            .collect();
+        self.show_picker("Problems", items, targets, 0, window, cx);
+        self.picker_problems = true;
+    }
+
+    /// F8 / Shift+F8: the next (previous) problem in the folder, after
+    /// (before) the cursor, wrapping around.
+    fn next_problem(&mut self, back: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let problems: Vec<_> = self
+            .lsp
+            .as_ref()
+            .map(|lsp| lsp.read(cx).problems(cx))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|p| p.severity <= Severity::Warning)
+            .collect();
+        if problems.is_empty() {
+            self.flash_message("No problems".to_string(), cx);
+            return;
+        }
+        let ix = match self.current_location(cx) {
+            Some(here) => {
+                let here = (&here.path, here.line, here.col);
+                if back {
+                    problems
+                        .iter()
+                        .rposition(|p| (&p.path, p.line, p.col) < here)
+                        .unwrap_or(problems.len() - 1)
+                } else {
+                    problems
+                        .iter()
+                        .position(|p| (&p.path, p.line, p.col) > here)
+                        .unwrap_or(0)
+                }
+            }
+            None => 0,
+        };
+        let problem = &problems[ix];
+        let target = Location {
+            path: problem.path.clone(),
+            name: Arc::from(""),
+            kind: SymbolKind::Other,
+            line: problem.line,
+            col: problem.col,
+        };
+        self.jump_to(target, window, cx);
+        self.show_problem_at_cursor(cx);
+    }
+
+    /// The hover for the problem the cursor was just put on.
+    fn show_problem_at_cursor(&mut self, cx: &mut Context<Self>) {
+        if let Some(editor) = self.active_editor() {
+            editor.update(cx, |editor, cx| {
+                let head = editor.state.selections().primary().head;
+                editor.show_hover_at(head, true, cx);
+            });
         }
     }
 
@@ -1357,6 +1693,7 @@ impl Workspace {
                 EditorEvent::GoToDefinition(pos) => {
                     this.go_to_definition(editor.clone(), *pos, window, cx)
                 }
+                EditorEvent::Hover { pos, id } => this.request_hover(editor.clone(), *pos, *id, cx),
             },
         )];
         Tab {
@@ -2247,7 +2584,7 @@ impl Workspace {
                     .px(px(4.))
                     .rounded(px(4.))
                     .hover(|s| s.bg(palette.hover).text_color(palette.text))
-                    .child(crate::picker::symbol_badge(symbol.kind, &palette))
+                    .child(Badge::symbol(symbol.kind, &palette).element())
                     .child(div().flex_none().child(symbol_label(symbol)))
                     .on_mouse_down(
                         MouseButton::Left,
@@ -2397,6 +2734,16 @@ impl Workspace {
                 }),
             ));
         }
+        if let Some(lsp) = &self.lsp {
+            let lsp = lsp.read(cx);
+            let (errors, warnings) = lsp.problem_counts();
+            let has_server = self
+                .active_editor()
+                .is_some_and(|editor| lsp.info(&editor).is_some());
+            if errors + warnings > 0 || has_server {
+                left.push(problems_item(errors, warnings, &palette, cx));
+            }
+        }
         if let Some(flash) = &self.flash {
             left.push(
                 div()
@@ -2511,6 +2858,43 @@ fn status_item(
         .hover(|s| s.bg(palette.hover).text_color(palette.text))
         .child(text)
         .on_mouse_down(MouseButton::Left, on_press)
+        .into_any_element()
+}
+
+/// Error and warning counts; click for the problems list.
+fn problems_item(
+    errors: usize,
+    warnings: usize,
+    palette: &theme::Palette,
+    cx: &mut Context<Workspace>,
+) -> AnyElement {
+    let count = |icon: &'static str, n: usize, color: gpui::Hsla| {
+        div()
+            .flex()
+            .items_center()
+            .gap(px(3.))
+            .child(svg().path(icon).size(px(13.)).text_color(if n > 0 {
+                color
+            } else {
+                palette.text_secondary
+            }))
+            .child(n.to_string())
+    };
+    div()
+        .id("status-problems")
+        .h(px(20.))
+        .px(px(6.))
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .rounded(px(4.))
+        .hover(|s| s.bg(palette.hover).text_color(palette.text))
+        .child(count("icons/circle-x.svg", errors, palette.error))
+        .child(count("icons/triangle-alert.svg", warnings, palette.warning))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, _, window, cx| this.show_problems(window, cx)),
+        )
         .into_any_element()
 }
 
@@ -2702,6 +3086,10 @@ impl Render for Workspace {
         let finder = self.finder.clone().filter(|_| self.finder_open);
         let command_palette = self.palette_open.then(|| self.palette.clone());
         let picker = self.picker_open.then(|| self.picker.clone());
+        let rename = self
+            .rename_target
+            .as_ref()
+            .map(|target| (self.rename.clone(), target.anchor));
         let mut context = KeyContext::new_with_defaults();
         context.add("Workspace");
 
@@ -2906,6 +3294,20 @@ impl Render for Workspace {
                     lsp.update(cx, |lsp, cx| lsp.restart(&editor, cx));
                 }
             }))
+            .on_action(
+                cx.listener(|this, _: &RenameSymbol, window, cx| this.rename_symbol(window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &ShowProblems, window, cx| this.show_problems(window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &NextProblem, window, cx| {
+                    this.next_problem(false, window, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &PreviousProblem, window, cx| {
+                this.next_problem(true, window, cx)
+            }))
             .on_action(cx.listener(|this, _: &StopLanguageServer, _, cx| {
                 if let (Some(lsp), Some(editor)) = (this.lsp.clone(), this.active_editor()) {
                     lsp.update(cx, |lsp, cx| lsp.stop(&editor, cx));
@@ -3030,7 +3432,42 @@ impl Render for Workspace {
                         .child(picker),
                 )
             })
+            .when_some(rename, |el, (rename, anchor)| match anchor {
+                Some(anchor) => el.child(deferred(
+                    anchored()
+                        .position(anchor)
+                        .snap_to_window_with_margin(px(8.))
+                        .child(rename),
+                )),
+                None => el.child(
+                    div()
+                        .absolute()
+                        .top(px(TITLE_BAR_HEIGHT + 8.))
+                        .left_0()
+                        .right_0()
+                        .flex()
+                        .justify_center()
+                        .child(rename),
+                ),
+            })
     }
+}
+
+/// Applies a rename's edits to a file that isn't open.
+fn edit_file(file: &FileEdit, encoding: me_lsp::Encoding) -> anyhow::Result<()> {
+    let text = std::fs::read_to_string(&file.path)?;
+    let mut rope = me_text::Rope::from_str(&text);
+    let changes = me_text::ChangeSet::new(
+        crate::lsp::char_edits(&rope, &file.edits, encoding)
+            .into_iter()
+            .map(|(range, text)| me_text::Change::new(range.start, range.end, text))
+            .collect(),
+    );
+    changes.apply(&mut rope);
+    let mut bytes = Vec::with_capacity(rope.len_bytes());
+    rope.write_to(&mut bytes)?;
+    crate::editor::write_atomically(&file.path, &bytes)?;
+    Ok(())
 }
 
 /// How a symbol reads in lists: impl blocks as `impl Name`.
@@ -3042,19 +3479,20 @@ fn symbol_label(symbol: &me_syntax::Symbol) -> String {
 }
 
 /// Waits for a language server's answer: says so in the status bar when
-/// it's slow, and gives up after [`LSP_TIMEOUT`] (the caller falls back).
+/// it's slow, and gives up after [`LSP_TIMEOUT`] (`None`; the caller falls
+/// back).
 async fn wait_for_server<T: Unpin + 'static>(
     this: &gpui::WeakEntity<Workspace>,
     request: Task<anyhow::Result<T>>,
     name: SharedString,
     cx: &mut gpui::AsyncWindowContext,
-) -> Option<T> {
+) -> Option<anyhow::Result<T>> {
     use futures::future::{Either, select};
     let slow = cx
         .background_executor()
         .timer(std::time::Duration::from_millis(400));
     let request = match select(request, slow).await {
-        Either::Left((result, _)) => return result.ok(),
+        Either::Left((result, _)) => return Some(result),
         Either::Right((_, request)) => request,
     };
     this.update(cx, |this, cx| {
@@ -3063,7 +3501,7 @@ async fn wait_for_server<T: Unpin + 'static>(
     .ok();
     let timeout = cx.background_executor().timer(LSP_TIMEOUT);
     let result = match select(request, timeout).await {
-        Either::Left((result, _)) => result.ok(),
+        Either::Left((result, _)) => Some(result),
         Either::Right(_) => None,
     };
     this.update(cx, |this, cx| {

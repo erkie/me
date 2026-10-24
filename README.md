@@ -39,6 +39,10 @@ code. The plan and the reasoning behind the technology choice are in
   and a built-in tree-sitter symbol index otherwise, so it works in every
   language we highlight with nothing to install; `⌘R` jumps to a symbol in
   the file, `⇧⌘R` in the project, and `⌃-` / `⌃⇧-` go back and forward
+- With a language server: **errors and warnings** underlined as you type
+  (`F8` steps through them, `⇧⌘M` lists them all), **hover** for types and
+  docs (rest the pointer on a word, or `⌘I`), and **rename** across files
+  with `F2`
 - Multiple selections: `⌘D`, `⌘L`, `⇧⌘L`, `⌃⌘G`, `⌃⇧↑/↓`, `⌥`-click,
   and **`⌥`-drag column selection**
 - Never loses work: closing a window or quitting keeps unsaved text, tabs
@@ -93,8 +97,10 @@ after its last file closed). It looks for the server on your login shell's
 | Java, Ruby, Swift, Lua, Shell | `jdtls`, `ruby-lsp`/`solargraph`, `sourcekit-lsp`, `lua-language-server`, `bash-language-server` |
 
 The status bar shows the server and what it's doing; click it to restart
-or stop it. Without a server (or while it's still starting) go to
-definition uses the built-in index. To pick another server or turn one off,
+or stop it. Next to the cursor position it counts the folder's errors and
+warnings; click it for the list. Without a server (or while it's still
+starting) go to definition uses the built-in index, and `F2` edits every
+occurrence of the word in the file instead of renaming across files. To pick another server or turn one off,
 edit `settings.json` (`~/Library/Application Support/Me` on macOS,
 `~/.config/me` elsewhere):
 

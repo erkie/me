@@ -68,6 +68,11 @@ fn commands(cx: &App) -> Vec<(String, Box<dyn Action>)> {
         ),
         ("Go to Definition".into(), Box::new(GoToDefinition)),
         ("Find References".into(), Box::new(FindReferences)),
+        ("Rename Symbol…".into(), Box::new(RenameSymbol)),
+        ("Show Hover".into(), Box::new(ShowHover)),
+        ("Show Problems".into(), Box::new(ShowProblems)),
+        ("Go to Next Problem".into(), Box::new(NextProblem)),
+        ("Go to Previous Problem".into(), Box::new(PreviousProblem)),
         ("Go Back".into(), Box::new(NavigateBack)),
         ("Go Forward".into(), Box::new(NavigateForward)),
         (

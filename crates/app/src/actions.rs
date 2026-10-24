@@ -67,6 +67,7 @@ actions!(
         TogglePreview,
         GoToLine,
         UseSelectionForFind,
+        ShowHover,
     ]
 );
 
@@ -107,6 +108,10 @@ actions!(
         NavigateForward,
         RestartLanguageServer,
         StopLanguageServer,
+        RenameSymbol,
+        ShowProblems,
+        NextProblem,
+        PreviousProblem,
     ]
 );
 
@@ -276,6 +281,11 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("shift-f12", FindReferences, workspace),
         KeyBinding::new("secondary-r", GoToSymbol, workspace),
         KeyBinding::new("secondary-shift-r", GoToProjectSymbol, workspace),
+        KeyBinding::new("f2", RenameSymbol, workspace),
+        KeyBinding::new("secondary-shift-m", ShowProblems, workspace),
+        KeyBinding::new("f8", NextProblem, workspace),
+        KeyBinding::new("shift-f8", PreviousProblem, workspace),
+        KeyBinding::new("secondary-i", ShowHover, editor),
         KeyBinding::new("ctrl-shift--", NavigateForward, workspace),
         // Ctrl+- is font size off the Mac.
         KeyBinding::new(

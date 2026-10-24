@@ -9,17 +9,19 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Bounds, ContentMask, CursorStyle, DispatchPhase, Element, ElementId, ElementInputHandler,
-    Entity, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement,
-    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
-    ScrollWheelEvent, ShapedLine, SharedString, Style, TextAlign, TextRun, Window, fill, font,
-    point, px, relative, size,
+    Anchor, AnyElement, App, AvailableSpace, Bounds, ContentMask, CursorStyle, DispatchPhase,
+    Element, ElementId, ElementInputHandler, Entity, GlobalElementId, Hitbox, HitboxBehavior, Hsla,
+    InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, PaintQuad, ParentElement, Pixels, Point, ScrollWheelEvent, ShapedLine,
+    SharedString, Style, TextAlign, TextRun, UnderlineStyle, Window, anchored, deferred, fill,
+    font, point, px, relative, size,
 };
 use me_text::movement::{char_col_at_visual, char_width as cell_width, visual_col};
 use me_text::wrap::{row_of, row_range, wrap_line};
 use me_text::{Document, EditorState};
 
-use super::{Autoscroll, EditorView};
+use super::diagnostics::Severity;
+use super::{Autoscroll, EditorView, hover};
 use crate::settings;
 use crate::theme::{self, Palette};
 
@@ -144,6 +146,20 @@ impl LayoutSnapshot {
             line,
             visual_col,
         }
+    }
+
+    /// The char under a point, if it's over one (not past a line's end).
+    pub fn char_at_point(&self, p: Point<Pixels>, state: &EditorState) -> Option<usize> {
+        let row = self
+            .rows
+            .iter()
+            .find(|r| p.y >= r.top && p.y < r.top + self.line_height)?;
+        let x = p.x - self.text_left + self.scroll_x;
+        let ix = row.char_x.partition_point(|cx| *cx <= x);
+        if ix == 0 || ix >= row.char_x.len() {
+            return None;
+        }
+        Some(state.doc.line_start(row.line) + row.start_col + ix - 1)
     }
 
     pub fn row_for(&self, line: usize, col: usize) -> Option<&RowLayout> {
@@ -363,6 +379,10 @@ pub struct PrepaintState {
     /// Underline of the Cmd-hovered word.
     link: Vec<PaintQuad>,
     link_hovered: bool,
+    /// Wavy underlines under problems: origin, width, color.
+    squiggles: Vec<(Point<Pixels>, Pixels, Hsla)>,
+    /// The hover popover, drawn on top of everything.
+    popover: Option<AnyElement>,
     scrollbar: Option<PaintQuad>,
     notice: Option<(Point<Pixels>, ShapedLine)>,
     line_height: Pixels,
@@ -710,6 +730,48 @@ impl Element for EditorElement {
         }
         let link_hovered = view.hover_link.is_some();
 
+        // Problems in the visible text, worst painted last; their lines'
+        // numbers take the color too.
+        let mut squiggles = Vec::new();
+        let mut problem_lines: HashMap<usize, Severity> = HashMap::new();
+        let first_visible = view
+            .diagnostics
+            .partition_point(|d| d.range.end < start_byte);
+        let visible: Vec<_> = view.diagnostics[first_visible..]
+            .iter()
+            .take_while(|d| d.range.start <= end_byte)
+            .filter(|d| d.severity != Severity::Hint)
+            .collect();
+        for severity in [Severity::Info, Severity::Warning, Severity::Error] {
+            let color = hover::severity_color(severity, &palette);
+            for d in visible.iter().filter(|d| d.severity == severity) {
+                let mut quads = Vec::new();
+                push_range_quads(
+                    &mut quads,
+                    doc,
+                    view.diagnostic_chars(d),
+                    &rows,
+                    &to_window,
+                    line_height,
+                    char_width,
+                    color,
+                    false,
+                );
+                for quad in quads {
+                    squiggles.push((
+                        point(quad.bounds.left(), quad.bounds.bottom() - px(3.5)),
+                        quad.bounds.size.width,
+                        color,
+                    ));
+                }
+                let line = rope.byte_to_line(d.range.start.min(rope.len_bytes()));
+                problem_lines
+                    .entry(line)
+                    .and_modify(|s| *s = (*s).min(severity))
+                    .or_insert(severity);
+            }
+        }
+
         let snapshot = LayoutSnapshot {
             bounds,
             text_left,
@@ -747,10 +809,12 @@ impl Element for EditorElement {
             .collect();
         let mut gutter = Vec::with_capacity(snapshot.rows.len());
         for row in snapshot.rows.iter().filter(|r| r.first) {
-            let color = if head_lines.binary_search(&row.line).is_ok() {
-                palette.gutter_active_text
-            } else {
-                palette.gutter_text
+            let color = match problem_lines.get(&row.line) {
+                Some(&severity) if severity <= Severity::Warning => {
+                    hover::severity_color(severity, &palette)
+                }
+                _ if head_lines.binary_search(&row.line).is_ok() => palette.gutter_active_text,
+                _ => palette.gutter_text,
             };
             let label: SharedString = (row.line + 1).to_string().into();
             let run = TextRun {
@@ -816,6 +880,47 @@ impl Element for EditorElement {
             point(bounds.left() + gutter_width, bounds.top()),
             bounds.bottom_right(),
         );
+
+        // The hover popover, above the word if there's room, else below.
+        let popover = view
+            .hover
+            .as_ref()
+            .filter(|h| h.is_visible())
+            .and_then(|hover| {
+                let p = snapshot.point_for_pos(hover.range.start, state)?;
+                let above = p.y - bounds.top();
+                let below = bounds.bottom() - (p.y + line_height);
+                let (corner, position, room) = if above >= px(160.) || above >= below {
+                    (Anchor::BottomLeft, point(p.x, p.y - px(2.)), above)
+                } else {
+                    (
+                        Anchor::TopLeft,
+                        point(p.x, p.y + line_height + px(2.)),
+                        below,
+                    )
+                };
+                let max_height = (room - px(8.)).clamp(px(60.), px(hover::MAX_HEIGHT));
+                Some(
+                    deferred(
+                        anchored()
+                            .anchor(corner)
+                            .position(position)
+                            .snap_to_window_with_margin(px(8.))
+                            .child(hover::popover(&self.view, hover, max_height, cx)),
+                    )
+                    .with_priority(1)
+                    .into_any_element(),
+                )
+            });
+        let popover = popover.map(|mut popover| {
+            popover.prepaint_as_root(
+                point(px(0.), px(0.)),
+                AvailableSpace::min_size(),
+                window,
+                cx,
+            );
+            popover
+        });
         self.view.update(cx, |view, _| view.layout = Some(snapshot));
 
         PrepaintState {
@@ -827,6 +932,8 @@ impl Element for EditorElement {
             cursors,
             link,
             link_hovered,
+            squiggles,
+            popover,
             scrollbar,
             notice,
             line_height,
@@ -864,6 +971,7 @@ impl Element for EditorElement {
         let lines = std::mem::take(&mut prepaint.lines);
         let cursors = std::mem::take(&mut prepaint.cursors);
         let link = std::mem::take(&mut prepaint.link);
+        let squiggles = std::mem::take(&mut prepaint.squiggles);
         window.with_content_mask(
             Some(ContentMask {
                 bounds: prepaint.text_bounds,
@@ -878,6 +986,17 @@ impl Element for EditorElement {
                 for quad in link {
                     window.paint_quad(quad);
                 }
+                for (origin, width, color) in squiggles {
+                    window.paint_underline(
+                        origin,
+                        width,
+                        &UnderlineStyle {
+                            thickness: px(1.),
+                            color: Some(color),
+                            wavy: true,
+                        },
+                    );
+                }
                 for cursor in cursors {
                     window.paint_quad(cursor);
                 }
@@ -891,6 +1010,9 @@ impl Element for EditorElement {
         }
         if let Some(scrollbar) = prepaint.scrollbar.take() {
             window.paint_quad(scrollbar);
+        }
+        if let Some(mut popover) = prepaint.popover.take() {
+            popover.paint(window, cx);
         }
     }
 }
@@ -934,12 +1056,23 @@ impl EditorElement {
             }
             if event.pressed_button.is_none() {
                 // Cmd over a word: show it as a link to its definition.
-                let link = (event.modifiers.secondary() && hb.is_hovered(window))
+                let over_text = hb.is_hovered(window);
+                let link = (event.modifiers.secondary() && over_text)
                     .then(|| view.read(cx).link_at(event.position))
                     .flatten();
                 if link.is_some() || view.read(cx).hover_link.is_some() {
                     view.update(cx, |view, cx| view.set_hover_link(link, cx));
                 }
+                // Resting on a word or a problem shows its hover.
+                let target = (over_text && !event.modifiers.secondary())
+                    .then(|| {
+                        let view = view.read(cx);
+                        view.layout
+                            .as_ref()?
+                            .char_at_point(event.position, &view.state)
+                    })
+                    .flatten();
+                view.update(cx, |view, cx| view.pointer_moved(target, cx));
                 return;
             }
             if event.pressed_button == Some(MouseButton::Left) && view.read(cx).is_dragging() {

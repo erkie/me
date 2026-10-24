@@ -185,6 +185,11 @@ fn set_menus(cx: &mut App) {
             MenuItem::separator(),
             MenuItem::action("Go to Definition", GoToDefinition),
             MenuItem::action("Find References", FindReferences),
+            MenuItem::action("Rename Symbol…", RenameSymbol),
+            MenuItem::separator(),
+            MenuItem::action("Problems", ShowProblems),
+            MenuItem::action("Next Problem", NextProblem),
+            MenuItem::action("Previous Problem", PreviousProblem),
         ]),
         Menu::new("Window").items([
             MenuItem::action("Minimize", Minimize),
