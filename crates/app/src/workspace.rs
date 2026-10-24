@@ -17,6 +17,7 @@ use crate::file_tree::{FileTree, FileTreeEvent};
 use crate::find_bar::{FindBar, FindBarEvent};
 use crate::finder::{FinderEvent, FinderView};
 use crate::goto_line::{GoToLineEvent, GoToLinePrompt};
+use crate::image_preview::{ImagePreview, is_image, is_svg};
 use crate::markdown::{MarkdownEvent, MarkdownPreview, is_markdown};
 use crate::palette::{CommandPalette, PaletteEvent};
 use crate::search_panel::{SearchPanel, SearchPanelEvent};
@@ -35,11 +36,36 @@ enum SidebarMode {
     Search,
 }
 
+/// What a tab shows instead of its source.
+#[derive(Clone)]
+pub enum Preview {
+    Markdown(Entity<MarkdownPreview>),
+    Image(Entity<ImagePreview>),
+}
+
+impl Preview {
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        match self {
+            Preview::Markdown(p) => p.focus_handle(cx),
+            Preview::Image(p) => p.focus_handle(cx),
+        }
+    }
+
+    fn element(&self) -> AnyElement {
+        match self {
+            Preview::Markdown(p) => p.clone().into_any_element(),
+            Preview::Image(p) => p.clone().into_any_element(),
+        }
+    }
+}
+
 pub struct Tab {
     pub id: u64,
     pub editor: Entity<EditorView>,
-    pub preview: Option<Entity<MarkdownPreview>>,
+    pub preview: Option<Preview>,
     pub show_preview: bool,
+    /// False for raster images, which have no text to show.
+    pub has_source: bool,
     /// Unpinned tabs are "preview tabs": the next single-click open reuses
     /// them (Sublime and VS Code behaviour). Editing pins them.
     pub pinned: bool,
@@ -52,6 +78,10 @@ impl Tab {
             (Some(preview), true) => preview.focus_handle(cx),
             _ => self.editor.focus_handle(cx),
         }
+    }
+
+    fn showing_preview(&self) -> bool {
+        self.show_preview && self.preview.is_some()
     }
 }
 
@@ -291,6 +321,9 @@ impl Workspace {
         for tab in &self.tabs {
             tab.editor
                 .update(cx, |editor, cx| editor.reload_if_changed(cx));
+            if let (Some(Preview::Image(image)), false) = (&tab.preview, tab.has_source) {
+                image.update(cx, |image, cx| image.reload(cx));
+            }
         }
     }
 
@@ -480,11 +513,33 @@ impl Workspace {
             return self.tabs[ix].id;
         }
 
-        let editor = cx.new(|cx| EditorView::open(path.clone(), window, cx));
-        if let Some(line) = options.line {
-            editor.update(cx, |e, cx| e.go_to(line, options.column, cx));
-        }
-        let tab = self.make_tab(editor, options.pin, is_markdown(&path), window, cx);
+        let tab = if is_image(&path) && !is_svg(&path) {
+            // A picture only; the bytes never go into an editor.
+            let editor = cx.new(|cx| EditorView::placeholder(path.clone(), window, cx));
+            let image = cx.new(|cx| ImagePreview::raster(path.clone(), cx));
+            let mut tab =
+                self.make_tab(editor, options.pin, Some(Preview::Image(image)), window, cx);
+            tab.has_source = false;
+            tab
+        } else {
+            let editor = cx.new(|cx| EditorView::open(path.clone(), window, cx));
+            if let Some(line) = options.line {
+                editor.update(cx, |e, cx| e.go_to(line, options.column, cx));
+            }
+            let (preview, subscription) = if is_svg(&path) {
+                let editor = editor.clone();
+                let image = cx.new(|cx| ImagePreview::svg(path.clone(), editor, cx));
+                (Some(Preview::Image(image)), None)
+            } else if is_markdown(&path) && options.line.is_none() {
+                let (preview, subscription) = self.markdown_preview(&editor, window, cx);
+                (Some(preview), Some(subscription))
+            } else {
+                (None, None)
+            };
+            let mut tab = self.make_tab(editor, options.pin, preview, window, cx);
+            tab._subscriptions.extend(subscription);
+            tab
+        };
         let id = tab.id;
 
         // Reuse an unpinned, unmodified preview tab.
@@ -513,7 +568,7 @@ impl Workspace {
     /// Opens a new tab with `text` (stdin, or a new untitled file).
     pub fn open_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) -> u64 {
         let editor = cx.new(|cx| EditorView::with_text(text, window, cx));
-        let tab = self.make_tab(editor, true, false, window, cx);
+        let tab = self.make_tab(editor, true, None, window, cx);
         let id = tab.id;
         let ix = self.active.map_or(self.tabs.len(), |a| a + 1);
         self.tabs.insert(ix, tab);
@@ -521,16 +576,44 @@ impl Workspace {
         id
     }
 
+    /// A rendered view of `editor`'s markdown; its local links open here.
+    fn markdown_preview(
+        &mut self,
+        editor: &Entity<EditorView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> (Preview, Subscription) {
+        let preview = cx.new(|cx| MarkdownPreview::new(editor.clone(), window, cx));
+        let subscription = cx.subscribe_in(
+            &preview,
+            window,
+            |this, _, event: &MarkdownEvent, window, cx| match event {
+                MarkdownEvent::OpenPath(path) => {
+                    this.open_path(
+                        path.clone(),
+                        OpenOptions {
+                            pin: true,
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    );
+                }
+            },
+        );
+        (Preview::Markdown(preview), subscription)
+    }
+
     fn make_tab(
         &mut self,
         editor: Entity<EditorView>,
         pinned: bool,
-        markdown: bool,
+        preview: Option<Preview>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Tab {
         let id = app_state::next_tab_id(cx);
-        let mut subscriptions = vec![cx.subscribe_in(
+        let subscriptions = vec![cx.subscribe_in(
             &editor,
             window,
             move |this, _, event: &EditorEvent, window, cx| match event {
@@ -553,32 +636,12 @@ impl Workspace {
                 EditorEvent::Loaded => cx.notify(),
             },
         )];
-        let preview = markdown.then(|| {
-            let preview = cx.new(|cx| MarkdownPreview::new(editor.clone(), window, cx));
-            subscriptions.push(cx.subscribe_in(
-                &preview,
-                window,
-                |this, _, event: &MarkdownEvent, window, cx| match event {
-                    MarkdownEvent::OpenPath(path) => {
-                        this.open_path(
-                            path.clone(),
-                            OpenOptions {
-                                pin: true,
-                                ..Default::default()
-                            },
-                            window,
-                            cx,
-                        );
-                    }
-                },
-            ));
-            preview
-        });
         Tab {
             id,
             editor,
             show_preview: preview.is_some(),
             preview,
+            has_source: true,
             pinned,
             _subscriptions: subscriptions,
         }
@@ -681,14 +744,19 @@ impl Workspace {
 
     fn toggle_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(ix) = self.active else { return };
-        let tab = &mut self.tabs[ix];
-        if tab.preview.is_none() {
-            let editor = tab.editor.clone();
-            let preview = cx.new(|cx| MarkdownPreview::new(editor, window, cx));
+        if !self.tabs[ix].has_source {
+            return;
+        }
+        if self.tabs[ix].preview.is_none() {
+            // Any file can be read as markdown.
+            let editor = self.tabs[ix].editor.clone();
+            let (preview, subscription) = self.markdown_preview(&editor, window, cx);
             let tab = &mut self.tabs[ix];
             tab.preview = Some(preview);
+            tab._subscriptions.push(subscription);
             tab.show_preview = true;
         } else {
+            let tab = &mut self.tabs[ix];
             tab.show_preview = !tab.show_preview;
         }
         let focus = self.tabs[ix].content_focus(cx);
@@ -701,8 +769,10 @@ impl Workspace {
     // ---------------------------------------------------------------------
 
     fn open_find_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(tab) = self.active_tab() else { return };
-        if tab.show_preview && tab.preview.is_some() {
+        let Some(tab) = self.active_tab().filter(|t| t.has_source) else {
+            return;
+        };
+        if tab.showing_preview() {
             // Find works on the source.
             self.toggle_preview(window, cx);
         }
@@ -945,8 +1015,10 @@ impl Workspace {
     }
 
     fn show_go_to_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(tab) = self.active_tab() else { return };
-        if tab.show_preview && tab.preview.is_some() {
+        let Some(tab) = self.active_tab().filter(|t| t.has_source) else {
+            return;
+        };
+        if tab.showing_preview() {
             self.toggle_preview(window, cx);
         }
         let Some(editor) = self.active_editor() else {
@@ -1170,6 +1242,7 @@ impl Workspace {
 
         let preview_toggle = self
             .active_tab()
+            .filter(|t| t.has_source)
             .and_then(|t| t.preview.as_ref().map(|_| t.show_preview));
         div()
             .id("tab-bar")
@@ -1255,15 +1328,21 @@ impl Workspace {
         let label = |text: SharedString| div().child(text).into_any_element();
         if let Some(tab) = self.active_tab() {
             let editor = tab.editor.read(cx);
-            if tab.show_preview && tab.preview.is_some() {
-                left.push(label(
-                    if cfg!(target_os = "macos") {
-                        "Markdown preview · ⇧⌘V for source"
-                    } else {
-                        "Markdown preview · Ctrl+Shift+V for source"
+            let source_key = if cfg!(target_os = "macos") {
+                "⇧⌘V"
+            } else {
+                "Ctrl+Shift+V"
+            };
+            if let (Some(preview), true) = (&tab.preview, tab.show_preview) {
+                left.push(label(match preview {
+                    Preview::Markdown(_) => {
+                        format!("Markdown preview · {source_key} for source").into()
                     }
-                    .into(),
-                ));
+                    Preview::Image(image) if tab.has_source => {
+                        format!("{} · {source_key} for source", image.read(cx).info).into()
+                    }
+                    Preview::Image(image) => image.read(cx).info.clone(),
+                }));
             } else {
                 let sels = editor.state.selections();
                 let primary = sels.primary();
@@ -1284,10 +1363,26 @@ impl Workspace {
                     ));
                 }
             }
-            if let Some(notice) = &editor.notice {
+            if let Some(notice) = &editor.notice
+                && tab.has_source
+            {
                 left.push(label(notice.clone()));
             }
             let language = editor.language_name();
+            if !tab.has_source {
+                return div()
+                    .h(px(STATUS_BAR_HEIGHT))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .px(px(14.))
+                    .border_t_1()
+                    .border_color(palette.border)
+                    .bg(palette.tab_bar_bg)
+                    .text_size(px(12.5))
+                    .text_color(palette.text_secondary)
+                    .children(left);
+            }
             right.push(status_item(
                 "status-language",
                 language.unwrap_or("Plain Text").into(),
@@ -1508,7 +1603,7 @@ impl Render for Workspace {
         let show_sidebar = self.sidebar_visible && self.root.is_some();
         let content: AnyElement = match self.active_tab() {
             Some(tab) => match (&tab.preview, tab.show_preview) {
-                (Some(preview), true) => preview.clone().into_any_element(),
+                (Some(preview), true) => preview.element(),
                 _ => tab.editor.clone().into_any_element(),
             },
             None => self.render_empty(cx).into_any_element(),

@@ -111,6 +111,8 @@ pub struct EditorView {
     was_dirty: bool,
     loading: bool,
     disk_mtime: Option<SystemTime>,
+    /// Never loads its file (see [`Self::placeholder`]).
+    placeholder: bool,
     _subscriptions: Vec<gpui::Subscription>,
 }
 
@@ -159,6 +161,7 @@ impl EditorView {
             was_dirty: false,
             loading: false,
             disk_mtime: None,
+            placeholder: false,
             _subscriptions: subscriptions,
         }
     }
@@ -166,6 +169,16 @@ impl EditorView {
     pub fn with_text(text: &str, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut this = Self::empty(window, cx);
         this.state = EditorState::from_str(text);
+        this
+    }
+
+    /// A tab's editor for a file shown only as a picture: it has the path
+    /// but never reads the file.
+    pub fn placeholder(path: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let mut this = Self::empty(window, cx);
+        this.path = Some(path);
+        this.read_only = true;
+        this.placeholder = true;
         this
     }
 
@@ -595,7 +608,7 @@ impl EditorView {
 
     /// Reloads from disk if the file changed there and has no unsaved edits.
     pub fn reload_if_changed(&mut self, cx: &mut Context<Self>) {
-        let Some(path) = self.path.clone() else {
+        let Some(path) = self.path.clone().filter(|_| !self.placeholder) else {
             return;
         };
         let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();

@@ -9,6 +9,7 @@ mod file_tree;
 mod find_bar;
 mod finder;
 mod goto_line;
+mod image_preview;
 mod ipc;
 mod markdown;
 mod menus;
