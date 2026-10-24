@@ -196,13 +196,18 @@ conflict. Phase 3 makes it user-configurable in `keymap.json`.
 | **Select line** (repeat to extend) | `Cmd+L` |
 | **Split selection into lines** (cursor per line) | `Cmd+Shift+L` |
 | **Add next occurrence** | `Cmd+D` |
-| Skip occurrence | `Cmd+K Cmd+D` |
+| Skip occurrence | menu or command palette |
 | **Select all occurrences** | `Ctrl+Cmd+G` |
 | Add cursor above / below | `Ctrl+Shift+↑/↓`, `Cmd+Alt+↑/↓` |
 | **Column selection** | `Option+drag` |
 | Add cursor | `Cmd+click` |
 | Collapse to a single cursor | `Esc` |
-| Toggle sidebar | `Cmd+B` (`Cmd+K Cmd+B` too) |
+| Command palette | `Cmd+K`, `Cmd+Shift+P` |
+| Toggle sidebar | `Cmd+B` |
+| Word wrap | `Alt+Z` |
+| Text size bigger / smaller / default | `Cmd+=` / `Cmd+-` / `Cmd+0` |
+| Reveal in Finder / copy path / copy relative path | `Cmd+Alt+R` / `Cmd+Alt+C` / `Cmd+Alt+Shift+C` |
+| Rename / move to trash (in the sidebar) | `F2` / `Cmd+Backspace` |
 | Toggle markdown preview / source | `Cmd+Shift+V` |
 | Close tab / reopen closed tab | `Cmd+W` / `Cmd+Shift+T` |
 | Switch to tab N | `Cmd+1`…`Cmd+9` |
@@ -305,27 +310,42 @@ task of Phase 1.
 
 ### Phase 1: Daily driver for reading (MVP)
 
+Done:
+
+* [x] Context menus (native NSMenus on macOS) in the editor, the tabs and
+      the sidebar; new file/folder, rename and trash in the sidebar.
+* [x] `Cmd+K` command palette; clickable status bar (syntax, indentation,
+      go to line).
+* [x] Tabs: drag to reorder, close others / to the right, double-click the
+      empty tab bar for a new file.
+* [x] Session restore: windows, folders, tabs, cursors, scroll positions
+      and unsaved text. Closing a window or quitting never asks.
+* [x] Word wrap (display rows; up/down move by row), `Cmd+=`/`Cmd+-` text
+      size, `settings.json`, no scrolling past the last line.
+* [x] Markdown: typography, local images, code blocks highlighted with the
+      editor's grammars, Mermaid diagrams (merman, all diagram types).
+* [x] Image and SVG previews; `.mdc` as markdown; `#!` language detection.
+
+To do:
+
 * Run on macOS and fix whatever the native shell needs: traffic-light
   spacing, vibrancy, menu shortcuts, Finder opens, **Install 'me'
   Command**, **Make Me the Default Editor…**.
 * Measure cold start on an M-series Mac against the 100 ms budget
   (`ME_TRACE_STARTUP=1`) and trim anything on the startup path.
-* Tabs: overflow scrolling, drag to reorder, context menu (close others,
-  reveal in Finder, copy path).
+* Tabs: overflow scrolling.
 * Find bar: match count ("3 of 12"), keep the find query per tab.
 * Project search: per-match checkboxes before replacing, and a preview of
   each replacement.
 * File watching (`notify`) instead of refresh-on-focus: refresh the tree,
   reload unmodified buffers, and re-render the markdown preview live while
   another program writes the file.
-* Session restore: windows, folders, tabs, cursors, scroll positions.
 * Markdown: keyboard scrolling in the preview (Space, Page Up/Down, arrows,
   Home/End). Mouse and trackpad scrolling already work; a `ScrollHandle`
   offset set from an action didn't repaint the gpui-component `TextView`, so
-  this needs a closer look. GitHub alerts (`> [!NOTE]`), heading anchors and in-page links,
-  relative images, front matter as a table, footnotes, and Mermaid (maybe).
-* Editor: bracket matching, auto-closing pairs, soft wrap for prose
-  (markdown source), and smooth scrollbar dragging.
+  this needs a closer look. GitHub alerts (`> [!NOTE]`), heading anchors and
+  in-page links, front matter as a table, footnotes, remote images.
+* Editor: bracket matching, auto-closing pairs, and scrollbar dragging.
 
 **Done when:** a week of daily use in place of Sublime with no blocker bugs,
 and cold start ≤ 100 ms.
@@ -345,10 +365,34 @@ and cold start ≤ 100 ms.
   CI fails on regressions over 10 %.
 * Memory profiling: idle ≤ 60 MB, no leaks over 1,000 tab open/close cycles.
 
+### Phase 2.5: Go to definition (Cmd+click)
+
+Use the standard language servers (rust-analyzer, gopls,
+typescript-language-server, pyright, clangd, …); analysing languages is
+their whole job, and they are what VS Code and Zed run too. Two tiers:
+
+1. **Built in, instant, nothing to install.** The tree-sitter grammars we
+   ship have `tags` queries; a background pass over the project builds a
+   symbol index (name → definitions). Cmd+click jumps to the definition when
+   the name is unambiguous and offers a short picker when it isn't;
+   `Cmd+R` lists the file's symbols and `Cmd+Shift+R` the project's. Every
+   language we highlight, a few MB of memory, not type-aware.
+2. **LSP, when a server is installed.** A `me-lsp` crate speaks JSON-RPC
+   over stdio (`lsp-types`). A server starts the first time a file of its
+   language opens in a folder (found on `PATH`, configured in
+   `settings.json`), open buffers sync incrementally (our `ByteEdit`s become
+   LSP ranges in UTF-16), and Cmd+click asks for `textDocument/definition`,
+   Cmd-hover for `hover`. Falls back to tier 1 without a server.
+   References, rename and diagnostics can follow.
+
+Language servers can use a lot of memory (rust-analyzer: gigabytes), so
+they only run while a window has files of their language open and stop
+when idle; the editor's own footprint doesn't change.
+
 ### Phase 3: Polish and configuration
 
-* `settings.json` (font, size, tab width, theme overrides, size cutoffs) and
-  `keymap.json`, both hot-reloaded.
+* More of `settings.json` (font family, tab width, theme overrides, size
+  cutoffs, language servers) and `keymap.json`, both hot-reloaded.
 * Scroll sync between source and preview (pulldown-cmark source offsets).
 * Minimal git awareness in the tree (modified/untracked dots). No git UI.
 * Distribution: Developer ID signing, notarization, auto-update (Sparkle-style
@@ -366,9 +410,8 @@ and cold start ≤ 100 ms.
 
 ## 9. Out of scope (for now)
 
-AI features, LSP and diagnostics, a terminal, a debugger, git UI beyond tree
-markers, plugins or extensions, collaboration, and WYSIWYG markdown editing.
-LSP is the most likely later addition; the architecture leaves room for it.
+AI features, a terminal, a debugger, git UI beyond tree markers, plugins or
+extensions, collaboration, and WYSIWYG markdown editing.
 
 ## 10. Open questions
 
