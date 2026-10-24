@@ -262,7 +262,7 @@ impl Workspace {
             (Some(file), Some(folder)) => format!("{file} — {folder}"),
             (Some(file), None) => file,
             (None, Some(folder)) => folder,
-            (None, None) => "Editor".into(),
+            (None, None) => "Me".into(),
         };
         window.set_window_title(&title);
     }
@@ -643,9 +643,7 @@ impl Workspace {
                     }
                 }
                 for path in on_disk {
-                    if let Err(err) =
-                        editor_project::replace_in_file(&path, query, replacement, None)
-                    {
+                    if let Err(err) = me_project::replace_in_file(&path, query, replacement, None) {
                         eprintln!("replace in {}: {err}", path.display());
                     }
                 }
@@ -1017,8 +1015,8 @@ impl Workspace {
             right.push(editor.language_name().unwrap_or("Plain Text").into());
             right.push(
                 match editor.state.doc.line_ending() {
-                    editor_text::LineEnding::Lf => "LF",
-                    editor_text::LineEnding::CrLf => "CRLF",
+                    me_text::LineEnding::Lf => "LF",
+                    me_text::LineEnding::CrLf => "CRLF",
                 }
                 .into(),
             );

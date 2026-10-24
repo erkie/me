@@ -4,7 +4,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use editor_project::{FileFinder, FileMatch, split_line_suffix};
 use futures::StreamExt;
 use futures::channel::mpsc;
 use gpui::{
@@ -14,6 +13,7 @@ use gpui::{
     UniformListScrollHandle, Window, div, prelude::FluentBuilder, px, svg, uniform_list,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
+use me_project::{FileFinder, FileMatch, split_line_suffix};
 
 use crate::{file_icons, theme};
 

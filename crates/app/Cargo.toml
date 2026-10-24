@@ -1,21 +1,21 @@
 [package]
-name = "editor-app"
-description = "The editor's GUI: GPUI windows, file tree, tabs, editor, markdown preview, finder and search."
+name = "me-app"
+description = "Me's GUI: GPUI windows, file tree, tabs, editor, markdown preview, finder and search."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish = false
-default-run = "editor-app"
+default-run = "me-app"
 
 [[bin]]
-name = "editor-app"
+name = "me-app"
 path = "src/main.rs"
 
 [dependencies]
-editor-ipc.workspace = true
-editor-project.workspace = true
-editor-syntax.workspace = true
-editor-text.workspace = true
+me-ipc.workspace = true
+me-project.workspace = true
+me-syntax.workspace = true
+me-text.workspace = true
 
 gpui.workspace = true
 gpui_platform.workspace = true

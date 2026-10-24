@@ -1,4 +1,4 @@
-//! The protocol between the `editor` CLI and the running app.
+//! The protocol between the `me` CLI and the running app.
 //!
 //! Transport: a per-user Unix domain socket carrying newline-delimited JSON.
 //! The CLI sends one [`Request`]; the app answers with a stream of
@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 /// Environment variable that overrides the socket path (tests, dev builds).
-pub const SOCKET_ENV: &str = "EDITOR_SOCKET";
+pub const SOCKET_ENV: &str = "ME_SOCKET";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenPath {
@@ -31,7 +31,7 @@ pub enum Request {
     Open {
         cwd: PathBuf,
         paths: Vec<OpenPath>,
-        /// Text read from stdin (`editor -`), opened as an untitled tab.
+        /// Text read from stdin (`me -`), opened as an untitled tab.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         stdin: Option<String>,
         wait: bool,
@@ -86,8 +86,7 @@ pub fn socket_path() -> PathBuf {
         .map(PathBuf::from)
         .filter(|p| p.is_dir())
         .unwrap_or_else(std::env::temp_dir);
-    base.join(format!("editor-{}", user_id()))
-        .join("editor.sock")
+    base.join(format!("me-{}", user_id())).join("me.sock")
 }
 
 #[cfg(unix)]
@@ -340,7 +339,7 @@ mod tests {
     #[test]
     fn round_trip_over_socket() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("sock/editor.sock");
+        let path = dir.path().join("sock/me.sock");
         let server = Server::bind(&path).unwrap();
         assert!(matches!(
             Server::bind(&path),
@@ -373,7 +372,7 @@ mod tests {
     #[test]
     fn stale_socket_is_replaced() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("editor.sock");
+        let path = dir.path().join("me.sock");
         drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
         assert!(path.exists());
         assert!(Server::bind(&path).is_ok());

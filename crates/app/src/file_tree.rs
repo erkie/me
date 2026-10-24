@@ -3,13 +3,13 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use editor_project::{DirEntry, list_dir};
 use gpui::{
     App, ClickEvent, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement,
     IntoElement, ParentElement, Render, ScrollStrategy, SharedString, StatefulInteractiveElement,
     Styled, UniformListScrollHandle, Window, actions, div, prelude::FluentBuilder, px, svg,
     uniform_list,
 };
+use me_project::{DirEntry, list_dir};
 
 use crate::{file_icons, theme};
 

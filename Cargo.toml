@@ -6,14 +6,14 @@ default-members = ["crates/text", "crates/project", "crates/ipc", "crates/cli", 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-repository = "https://github.com/erkie/editor"
+repository = "https://github.com/erkie/me"
 rust-version = "1.90"
 
 [workspace.dependencies]
-editor-text = { path = "crates/text" }
-editor-syntax = { path = "crates/syntax" }
-editor-project = { path = "crates/project" }
-editor-ipc = { path = "crates/ipc" }
+me-text = { path = "crates/text" }
+me-syntax = { path = "crates/syntax" }
+me-project = { path = "crates/project" }
+me-ipc = { path = "crates/ipc" }
 
 # UI. Pinned exactly: GPUI is pre-1.0 and changes between snapshots.
 gpui = { package = "gpui-pre", version = "=0.3.9" }

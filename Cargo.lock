@@ -1359,100 +1359,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
-name = "editor-app"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "core-foundation 0.10.1",
- "editor-ipc",
- "editor-project",
- "editor-syntax",
- "editor-text",
- "futures",
- "gpui-component",
- "gpui-kit-assets",
- "gpui-pre",
- "gpui-pre-platform",
- "parking_lot",
- "serde",
- "tempfile",
-]
-
-[[package]]
-name = "editor-cli"
-version = "0.1.0"
-dependencies = [
- "editor-ipc",
- "tempfile",
-]
-
-[[package]]
-name = "editor-ipc"
-version = "0.1.0"
-dependencies = [
- "libc",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "editor-project"
-version = "0.1.0"
-dependencies = [
- "editor-text",
- "grep-matcher",
- "grep-regex",
- "grep-searcher",
- "ignore",
- "nucleo",
- "parking_lot",
- "tempfile",
-]
-
-[[package]]
-name = "editor-syntax"
-version = "0.1.0"
-dependencies = [
- "editor-text",
- "ropey 1.6.1",
- "streaming-iterator",
- "tree-sitter",
- "tree-sitter-bash",
- "tree-sitter-c",
- "tree-sitter-cpp",
- "tree-sitter-css",
- "tree-sitter-diff",
- "tree-sitter-go",
- "tree-sitter-html",
- "tree-sitter-java",
- "tree-sitter-javascript",
- "tree-sitter-json",
- "tree-sitter-lua",
- "tree-sitter-make",
- "tree-sitter-md",
- "tree-sitter-python",
- "tree-sitter-ruby",
- "tree-sitter-rust",
- "tree-sitter-swift",
- "tree-sitter-toml-ng",
- "tree-sitter-typescript",
- "tree-sitter-yaml",
-]
-
-[[package]]
-name = "editor-text"
-version = "0.1.0"
-dependencies = [
- "regex-cursor",
- "regex-syntax",
- "ropey 1.6.1",
- "smallvec",
- "unicode-segmentation",
- "unicode-width",
-]
-
-[[package]]
 name = "either"
 version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3771,6 +3677,100 @@ checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
 dependencies = [
  "cfg-if",
  "digest 0.10.7",
+]
+
+[[package]]
+name = "me-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "core-foundation 0.10.1",
+ "futures",
+ "gpui-component",
+ "gpui-kit-assets",
+ "gpui-pre",
+ "gpui-pre-platform",
+ "me-ipc",
+ "me-project",
+ "me-syntax",
+ "me-text",
+ "parking_lot",
+ "serde",
+ "tempfile",
+]
+
+[[package]]
+name = "me-cli"
+version = "0.1.0"
+dependencies = [
+ "me-ipc",
+ "tempfile",
+]
+
+[[package]]
+name = "me-ipc"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "me-project"
+version = "0.1.0"
+dependencies = [
+ "grep-matcher",
+ "grep-regex",
+ "grep-searcher",
+ "ignore",
+ "me-text",
+ "nucleo",
+ "parking_lot",
+ "tempfile",
+]
+
+[[package]]
+name = "me-syntax"
+version = "0.1.0"
+dependencies = [
+ "me-text",
+ "ropey 1.6.1",
+ "streaming-iterator",
+ "tree-sitter",
+ "tree-sitter-bash",
+ "tree-sitter-c",
+ "tree-sitter-cpp",
+ "tree-sitter-css",
+ "tree-sitter-diff",
+ "tree-sitter-go",
+ "tree-sitter-html",
+ "tree-sitter-java",
+ "tree-sitter-javascript",
+ "tree-sitter-json",
+ "tree-sitter-lua",
+ "tree-sitter-make",
+ "tree-sitter-md",
+ "tree-sitter-python",
+ "tree-sitter-ruby",
+ "tree-sitter-rust",
+ "tree-sitter-swift",
+ "tree-sitter-toml-ng",
+ "tree-sitter-typescript",
+ "tree-sitter-yaml",
+]
+
+[[package]]
+name = "me-text"
+version = "0.1.0"
+dependencies = [
+ "regex-cursor",
+ "regex-syntax",
+ "ropey 1.6.1",
+ "smallvec",
+ "unicode-segmentation",
+ "unicode-width",
 ]
 
 [[package]]

@@ -9,14 +9,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use editor_syntax::{DEFAULT_MAX_FILE_SIZE, Syntax, language_for_path};
-use editor_text::{
-    ClipboardText, Document, EditKind, EditorState, Matcher, SearchQuery, Selection, SelectionSet,
-};
 use gpui::{
     App, Bounds, ClipboardItem, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement,
     IntoElement, KeyContext, ParentElement, Pixels, Point, Render, SharedString, Styled, Task,
     UTF16Selection, Window, div, px,
+};
+use me_syntax::{DEFAULT_MAX_FILE_SIZE, Syntax, language_for_path};
+use me_text::{
+    ClipboardText, Document, EditKind, EditorState, Matcher, SearchQuery, Selection, SelectionSet,
 };
 use serde::{Deserialize, Serialize};
 
@@ -351,12 +351,7 @@ impl EditorView {
             let tree = cx
                 .background_executor()
                 .spawn(async move {
-                    editor_syntax::parse(
-                        &language,
-                        &rope,
-                        old_tree.as_ref(),
-                        Duration::from_secs(3),
-                    )
+                    me_syntax::parse(&language, &rope, old_tree.as_ref(), Duration::from_secs(3))
                 })
                 .await;
             this.update(cx, |this, cx| {

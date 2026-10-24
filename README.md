@@ -1,11 +1,11 @@
-<p align="center"><img src="assets/logo/app-icon-256.png" width="128" alt="Editor icon"></p>
+<p align="center"><img src="assets/logo/app-icon-256.png" width="128" alt="Me icon"></p>
 
-# Editor
+# Me
 
-A fast, native code editor for **reading markdown** and **looking things up
-in code**. It starts in about 0.1 s, uses tens of megabytes instead of
-gigabytes, opens huge files, and follows the system's light/dark mode. It has
-no AI features.
+**Me** (short for "my editor") is a fast, native code editor for **reading
+markdown** and **looking things up in code**. It starts in about 0.1 s, uses
+tens of megabytes instead of gigabytes, opens huge files, and follows the
+system's light/dark mode. It has no AI features.
 
 It is written in Rust on [GPUI](https://gpui.rs), the GPU-accelerated UI
 framework behind Zed. macOS comes first; Linux and Windows run from the same
@@ -27,45 +27,44 @@ code. The plan and the reasoning behind the technology choice are in
   and **`⌥`-drag column selection**
 - Huge files: a rope buffer, viewport-only shaping, and background loading
   and parsing
-- `editor` CLI: `editor .`, `editor file.rs:42:7`, and `editor -w` for
-  `$EDITOR`
+- `me` CLI: `me .`, `me file.rs:42:7`, and `me -w` for `$EDITOR`
 - Native menus, transparent title bar, sidebar vibrancy, and automatic
   light/dark mode
 
 ## Install (macOS)
 
 ```sh
-script/bundle-macos --install      # builds dist/Editor.app, copies it to /Applications, links `editor`
+script/bundle-macos --install      # builds dist/Me.app, copies it to /Applications, links `me`
 ```
 
-Or run **Editor → Install 'editor' Command…** from the app. To make Editor the
-default for text and code files, run **Editor → Make Default Editor…**.
+Or run **Me → Install 'me' Command…** from the app. To make Me the default
+for text and code files, run **Me → Make Me the Default Editor…**.
 
 To use it for git commit messages and other `$EDITOR` prompts:
 
 ```sh
-export EDITOR="editor -w"
+export EDITOR="me -w"
 ```
 
 ## Usage
 
 ```
-editor                 # focus Editor (launches it if needed)
-editor .               # open the current folder
-editor README.md       # open a file (rendered, since it's markdown)
-editor src/main.rs:42  # open at a line (and :column)
-editor -w FILE         # wait until the tab is closed
-editor -n ...          # new window
-some-command | editor -
+me                 # focus Me (launches it if needed)
+me .               # open the current folder
+me README.md       # open a file (rendered, since it's markdown)
+me src/main.rs:42  # open at a line (and :column)
+me -w FILE         # wait until the tab is closed
+me -n ...          # new window
+some-command | me -
 ```
 
 ## Development
 
 ```sh
-cargo run -p editor-app -- .     # run the app on this repo
-cargo run -p editor-cli -- .     # the CLI (talks to / launches the app next to it)
+cargo run -p me-app -- .         # run the app on this repo
+cargo run -p me-cli -- .         # the CLI (talks to / launches the app next to it)
 cargo test --workspace           # core, project, syntax, ipc and CLI tests
-EDITOR_TRACE_STARTUP=1 cargo run --release -p editor-app   # print startup timings
+ME_TRACE_STARTUP=1 cargo run --release -p me-app   # print startup timings
 ```
 
 Linux needs the GPUI system libraries:
@@ -77,7 +76,7 @@ Linux needs the GPUI system libraries:
 | `crates/syntax` | Tree-sitter highlighting: lazy grammars, incremental parsing, visible-range queries. |
 | `crates/project` | Directory listing, fuzzy file finder, project search and replace. |
 | `crates/ipc` | CLI ⇄ app protocol over a Unix socket. |
-| `crates/cli` | The `editor` command (about 500 KB, no GUI dependencies). |
+| `crates/cli` | The `me` command (about 500 KB, no GUI dependencies). |
 | `crates/app` | The GPUI app. |
 
 File-type icons are from [Seti UI](https://github.com/jesseweed/seti-ui)

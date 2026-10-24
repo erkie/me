@@ -3,7 +3,7 @@
 //! Notation: `|` is a cursor, `[text]` is a forward selection (head at `]`),
 //! `{text}` is a reversed selection (head at `{`).
 
-use editor_text::{ClipboardText, EditorState, SearchQuery, Selection, SelectionSet};
+use me_text::{ClipboardText, EditorState, SearchQuery, Selection, SelectionSet};
 
 fn state(marked: &str) -> EditorState {
     let mut text = String::new();

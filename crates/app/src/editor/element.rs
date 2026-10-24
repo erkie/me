@@ -3,8 +3,6 @@
 
 use std::time::{Duration, Instant};
 
-use editor_text::EditorState;
-use editor_text::movement::{char_col_at_visual, char_width as cell_width, visual_col};
 use gpui::{
     App, Bounds, ContentMask, CursorStyle, DispatchPhase, Element, ElementId, ElementInputHandler,
     Entity, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement,
@@ -12,6 +10,8 @@ use gpui::{
     ScrollWheelEvent, ShapedLine, SharedString, Style, TextAlign, TextRun, Window, fill, font,
     point, px, relative, size,
 };
+use me_text::EditorState;
+use me_text::movement::{char_col_at_visual, char_width as cell_width, visual_col};
 
 use super::{Autoscroll, EditorView, ScrollPosition};
 use crate::theme::{self, Palette};
@@ -644,7 +644,7 @@ fn push_run(runs: &mut Vec<TextRun>, len: usize, color: Hsla, font: &gpui::Font)
 #[allow(clippy::too_many_arguments)]
 fn push_range_quads(
     out: &mut Vec<PaintQuad>,
-    doc: &editor_text::Document,
+    doc: &me_text::Document,
     range: std::ops::Range<usize>,
     first_line: usize,
     last_line: usize,

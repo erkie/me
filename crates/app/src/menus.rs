@@ -2,8 +2,8 @@
 
 use std::path::PathBuf;
 
-use editor_ipc::OpenPath;
 use gpui::{App, Menu, MenuItem, OsAction, PathPromptOptions, PromptLevel, SystemMenuType};
+use me_ipc::OpenPath;
 
 use crate::actions::*;
 use crate::app_state;
@@ -44,7 +44,7 @@ pub fn init(cx: &mut App) {
                 .update(cx, |_, window, cx| {
                     let _ = window.prompt(
                         PromptLevel::Info,
-                        &format!("Editor {}", env!("CARGO_PKG_VERSION")),
+                        &format!("Me {}", env!("CARGO_PKG_VERSION")),
                         Some("A fast, native editor for reading markdown and code."),
                         &["OK"],
                         cx,
@@ -86,19 +86,19 @@ fn prompt_open(files: bool, cx: &mut App) {
 
 fn set_menus(cx: &mut App) {
     cx.set_menus([
-        Menu::new("Editor").items([
-            MenuItem::action("About Editor", About),
+        Menu::new("Me").items([
+            MenuItem::action("About Me", About),
             MenuItem::separator(),
-            MenuItem::action("Install 'editor' Command…", InstallCli),
-            MenuItem::action("Make Default Editor…", MakeDefaultEditor),
+            MenuItem::action("Install 'me' Command…", InstallCli),
+            MenuItem::action("Make Me the Default Editor…", MakeDefaultEditor),
             MenuItem::separator(),
             MenuItem::os_submenu("Services", SystemMenuType::Services),
             MenuItem::separator(),
-            MenuItem::action("Hide Editor", Hide),
+            MenuItem::action("Hide Me", Hide),
             MenuItem::action("Hide Others", HideOthers),
             MenuItem::action("Show All", ShowAll),
             MenuItem::separator(),
-            MenuItem::action("Quit Editor", Quit),
+            MenuItem::action("Quit Me", Quit),
         ]),
         Menu::new("File").items([
             MenuItem::action("New File", NewFile),

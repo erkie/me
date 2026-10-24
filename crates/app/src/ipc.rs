@@ -5,10 +5,10 @@ pub use unix::*;
 
 #[cfg(unix)]
 mod unix {
-    use editor_ipc::{Request, Server};
     use futures::StreamExt;
     use futures::channel::mpsc;
     use gpui::App;
+    use me_ipc::{Request, Server};
 
     use crate::app_state::{self, Reply};
 

@@ -31,7 +31,7 @@ jobs:
       - run: cargo test --workspace --locked
 
   macos:
-    name: macOS (test + Editor.app)
+    name: macOS (test + Me.app)
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -39,9 +39,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
       - run: script/bundle-macos
-      - name: Zip Editor.app
-        run: ditto -c -k --keepParent dist/Editor.app dist/Editor-macos.zip
+      - name: Zip Me.app
+        run: ditto -c -k --keepParent dist/Me.app dist/Me-macos.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: Editor-macos
-          path: dist/Editor-macos.zip
+          name: Me-macos
+          path: dist/Me-macos.zip

@@ -1,12 +1,12 @@
 //! Cmd+F: find (and replace) in the current file.
 
-use editor_text::SearchQuery;
 use gpui::{
     App, AppContext, ClickEvent, Context, Entity, EventEmitter, InteractiveElement, IntoElement,
     KeyDownEvent, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
     Subscription, Window, div, prelude::FluentBuilder, px,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
+use me_text::SearchQuery;
 
 use crate::theme;
 

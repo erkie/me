@@ -1,5 +1,5 @@
 [package]
-name = "editor-syntax"
+name = "me-syntax"
 description = "Syntax highlighting with tree-sitter: lazy grammars, incremental parsing, viewport-only highlighting."
 version.workspace = true
 edition.workspace = true
@@ -7,7 +7,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-editor-text.workspace = true
+me-text.workspace = true
 ropey.workspace = true
 streaming-iterator = "0.1"
 tree-sitter.workspace = true

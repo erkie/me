@@ -1,4 +1,4 @@
-//! Editor: a fast, native editor for reading markdown and code.
+//! Me: a fast, native editor for reading markdown and code.
 
 mod actions;
 mod app_state;
@@ -20,13 +20,13 @@ mod workspace;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use editor_ipc::{OpenPath, Request, parse_path_arg};
 use futures::StreamExt;
 use futures::channel::mpsc;
 use gpui::App;
+use me_ipc::{OpenPath, Request, parse_path_arg};
 
 struct Args {
-    /// Launched by the `editor` CLI, which will send what to open over the
+    /// Launched by the `me` CLI, which will send what to open over the
     /// socket; don't open a default window.
     from_cli: bool,
     paths: Vec<OpenPath>,
@@ -69,9 +69,9 @@ pub fn trace_first_frame() {
     }
 }
 
-/// `EDITOR_TRACE_STARTUP=1` prints how long each startup phase took.
+/// `ME_TRACE_STARTUP=1` prints how long each startup phase took.
 fn trace(started: Instant, label: &str) {
-    if std::env::var_os("EDITOR_TRACE_STARTUP").is_some() {
+    if std::env::var_os("ME_TRACE_STARTUP").is_some() {
         eprintln!(
             "startup: {label:<28} {:>7.1} ms",
             started.elapsed().as_secs_f64() * 1000.
@@ -86,15 +86,15 @@ fn main() {
     // Single instance: if the app is already running, hand our paths to it.
     #[cfg(unix)]
     let server = {
-        let socket = editor_ipc::socket_path();
-        match editor_ipc::Server::bind(&socket) {
+        let socket = me_ipc::socket_path();
+        match me_ipc::Server::bind(&socket) {
             Ok(server) => Some(server),
-            Err(editor_ipc::BindError::AlreadyRunning) => {
+            Err(me_ipc::BindError::AlreadyRunning) => {
                 forward_to_running(&socket, args.paths);
                 return;
             }
             Err(err) => {
-                eprintln!("editor: CLI integration disabled: {err}");
+                eprintln!("me: CLI integration disabled: {err}");
                 None
             }
         }
@@ -187,12 +187,12 @@ fn forward_to_running(socket: &std::path::Path, paths: Vec<OpenPath>) {
         wait: false,
         new_window: false,
     };
-    match editor_ipc::Client::connect(socket) {
+    match me_ipc::Client::connect(socket) {
         Ok(mut client) => {
             let _ = client.send(&request);
             let _ = client.recv();
         }
-        Err(err) => eprintln!("editor: could not reach the running instance: {err}"),
+        Err(err) => eprintln!("me: could not reach the running instance: {err}"),
     }
 }
 

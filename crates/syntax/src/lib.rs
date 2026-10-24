@@ -13,7 +13,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use editor_text::{ByteEdit, Rope, RopeSlice};
+use me_text::{ByteEdit, Rope, RopeSlice};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{
     InputEdit, Node, ParseOptions, ParseState, Parser, Point, Query, QueryCursor, TextProvider,
@@ -147,10 +147,7 @@ impl LanguageDef {
         let query = match Query::new(&grammar, &source) {
             Ok(query) => query,
             Err(err) => {
-                eprintln!(
-                    "editor-syntax: highlight query for {} failed: {err}",
-                    self.name
-                );
+                eprintln!("me-syntax: highlight query for {} failed: {err}", self.name);
                 return None;
             }
         };
@@ -372,7 +369,7 @@ impl<'a> Iterator for ChunkBytes<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use editor_text::EditorState;
+    use me_text::EditorState;
 
     fn highlights_of(lang: &str, source: &str) -> Vec<(String, Highlight)> {
         let def = language_by_name(lang).unwrap();

@@ -1,6 +1,6 @@
 [package]
-name = "editor-ipc"
-description = "Protocol and transport between the `editor` CLI and the running app."
+name = "me-ipc"
+description = "Protocol and transport between the `me` CLI and the running app."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

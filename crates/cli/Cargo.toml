@@ -1,17 +1,17 @@
 [package]
-name = "editor-cli"
-description = "The `editor` command: opens files and folders in the app, optionally waiting (-w)."
+name = "me-cli"
+description = "The `me` command: opens files and folders in the app, optionally waiting (-w)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish = false
 
 [[bin]]
-name = "editor"
+name = "me"
 path = "src/main.rs"
 
 [dependencies]
-editor-ipc.workspace = true
+me-ipc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

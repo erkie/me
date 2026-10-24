@@ -1,4 +1,4 @@
-# Editor: plan and architecture
+# Me: plan and architecture
 
 A native, fast code editor for reading markdown and looking things up in code.
 It should start in about 0.1 s, use little memory, open huge files, and look
@@ -19,7 +19,7 @@ phased plan. Each phase has acceptance criteria that can be checked.
 | R4 | Tabs | Preview tab (single click) and pinned tab (edit or double click), as in Sublime. |
 | R5 | Code editor | Fast syntax highlighting. |
 | R6 | Seamless markdown preview | `.md` opens rendered. One key flips to source. No inline editing. |
-| R7 | CLI: `editor .`, `editor file:12`, `-w` wait mode | Works as `EDITOR="editor -w"` for git. |
+| R7 | CLI: `me .`, `me file:12`, `-w` wait mode | Works as `EDITOR="me -w"` for git. |
 | R8 | Can be the default editor | macOS Launch Services and `$EDITOR`. Linux `.desktop`/xdg-mime. |
 | R9 | Fast Cmd+T file search | Fuzzy, incremental, 100k+ files. |
 | R10 | Fast project search and replace | ripgrep engine, streaming results. |
@@ -62,8 +62,8 @@ Risks and mitigations:
 * **GPUI is pre-1.0 and its API changes.** We pin exact versions
   (`gpui-pre =0.3.9`, a weekly crates.io snapshot of Zed's gpui, and
   `gpui-component =0.8.0`). Upgrades are deliberate and done one at a time.
-  Editor logic lives in UI-independent crates (`editor-text`, `editor-project`,
-  `editor-syntax`, `editor-ipc`) so most of the code never touches GPUI.
+  Editor logic lives in UI-independent crates (`me-text`, `me-project`,
+  `me-syntax`, `me-ipc`) so most of the code never touches GPUI.
 * **The widgets are custom-drawn, not AppKit.** On macOS we use the native
   menu bar, native traffic lights in a transparent titlebar, sidebar
   vibrancy, the system UI font, native open/save panels and alerts, and macOS
@@ -79,7 +79,7 @@ Risks and mitigations:
 
 ```
 ┌──────────────┐  unix socket / named pipe   ┌────────────────────────────────────────┐
-│ editor (CLI) │ ──────────────────────────▶ │ Editor.app  (editor-app, GPUI)          │
+│ editor (CLI) │ ──────────────────────────▶ │ Me.app  (me-app, GPUI)          │
 │ ~300 KB, no  │ ◀──── "closed" events ───── │                                        │
 │ GUI deps     │       (for -w)              │  Workspace (one per window)            │
 └──────────────┘                             │  ├─ Sidebar: FileTree view             │
@@ -91,7 +91,7 @@ Risks and mitigations:
                                                              │ uses (no GPUI below this line)
               ┌──────────────────┬───────────────────────────┼──────────────────┐
               ▼                  ▼                           ▼                  ▼
-        editor-text        editor-syntax              editor-project       editor-ipc
+        me-text        me-syntax              me-project       me-ipc
         rope buffer,       tree-sitter, lazy          file tree, fuzzy      CLI ⇄ app
         selections,        grammars, viewport         finder (nucleo),      protocol
         multi-cursor,      highlighting               search & replace
@@ -102,12 +102,12 @@ Risks and mitigations:
 
 | Crate | Kind | Depends on GPUI | Purpose |
 |-------|------|-----------------|---------|
-| `crates/text` (`editor-text`) | lib | no | `Document` (ropey rope + line endings + undo history), `Selection`/`SelectionSet`, movement (grapheme and word aware), every edit and multi-cursor command, in-file search. Heavily unit tested. |
-| `crates/syntax` (`editor-syntax`) | lib | no | Language detection, lazily built tree-sitter grammars and queries, incremental reparse, highlight spans for a byte range only (the viewport). Size cutoffs for huge files. |
-| `crates/project` (`editor-project`) | lib | no | Directory listing for the tree, background file index, fuzzy matching (nucleo), project search (grep-searcher + ignore's parallel walker), safe replace-in-files. |
-| `crates/ipc` (`editor-ipc`) | lib | no | Socket path, message types, framing, client and server helpers. |
-| `crates/cli` (`editor-cli`) | bin `editor` | no | Parses arguments, connects to or launches the app, forwards the request, waits for `-w`. |
-| `crates/app` (`editor-app`) | bin `editor-app` | yes | GPUI app: windows, views, keymap, theme, menus, platform integration. |
+| `crates/text` (`me-text`) | lib | no | `Document` (ropey rope + line endings + undo history), `Selection`/`SelectionSet`, movement (grapheme and word aware), every edit and multi-cursor command, in-file search. Heavily unit tested. |
+| `crates/syntax` (`me-syntax`) | lib | no | Language detection, lazily built tree-sitter grammars and queries, incremental reparse, highlight spans for a byte range only (the viewport). Size cutoffs for huge files. |
+| `crates/project` (`me-project`) | lib | no | Directory listing for the tree, background file index, fuzzy matching (nucleo), project search (grep-searcher + ignore's parallel walker), safe replace-in-files. |
+| `crates/ipc` (`me-ipc`) | lib | no | Socket path, message types, framing, client and server helpers. |
+| `crates/cli` (`me-cli`) | bin `me` | no | Parses arguments, connects to or launches the app, forwards the request, waits for `-w`. |
+| `crates/app` (`me-app`) | bin `me-app` | yes | GPUI app: windows, views, keymap, theme, menus, platform integration. |
 
 ### Key design decisions
 
@@ -160,8 +160,8 @@ Phase 2.
 
 | Metric | Budget (Apple Silicon) |
 |--------|------------------------|
-| Cold start to first frame (`editor .` with the app closed) | ≤ 100 ms |
-| Warm `editor .` (app running) to new window | ≤ 30 ms |
+| Cold start to first frame (`me .` with the app closed) | ≤ 100 ms |
+| Warm `me .` (app running) to new window | ≤ 30 ms |
 | Idle RSS, one window, small project | ≤ 60 MB |
 | Keystroke to paint | ≤ 8 ms (one frame at 120 Hz) |
 | Cmd+T: index 100k files | ≤ 300 ms, in the background, never blocks typing |
@@ -218,17 +218,17 @@ conflict. Phase 3 makes it user-configurable in `keymap.json`.
 ## 6. CLI
 
 ```
-editor                 # focus the app (launch if needed)
-editor .               # open the current folder in a window
-editor path/to/dir     # open a folder
-editor a.md b.rs:42:7  # open files, optionally at line[:column]
-editor -w FILE         # wait until FILE's tab is closed (git commit, crontab -e, ...)
-editor -n ...          # force a new window
-editor -               # read stdin into a new scratch tab
-editor --version
+me                 # focus the app (launch if needed)
+me .               # open the current folder in a window
+me path/to/dir     # open a folder
+me a.md b.rs:42:7  # open files, optionally at line[:column]
+me -w FILE         # wait until FILE's tab is closed (git commit, crontab -e, ...)
+me -n ...          # force a new window
+me -               # read stdin into a new scratch tab
+me --version
 ```
 
-Set it as the shell's editor: `export EDITOR="editor -w"`.
+Set it as the shell's editor: `export EDITOR="me -w"`.
 
 **Protocol (newline-delimited JSON over the socket).**
 
@@ -241,8 +241,8 @@ Set it as the shell's editor: `export EDITOR="editor -w"`.
 {"type":"error","message":"…"}
 ```
 
-Socket path: `$XDG_RUNTIME_DIR/editor/editor.sock` if set, otherwise
-`$TMPDIR/editor-$UID/editor.sock` (on macOS `$TMPDIR` is already per-user).
+Socket path: `$XDG_RUNTIME_DIR/me-$UID/me.sock` if set, otherwise
+`$TMPDIR/me-$UID/me.sock` (on macOS `$TMPDIR` is already per-user).
 The directory is created with mode 0700.
 
 ## 7. Default editor registration
@@ -251,15 +251,15 @@ The directory is created with mode 0700.
   `public.plain-text`, `public.source-code`, `public.script`,
   `net.daringfireball.markdown`, `public.json`, `public.xml`, `public.yaml`,
   `public.shell-script`, and similar, with rank `Alternate`, so we never take
-  over silently. The **Editor → Make Default Editor…** command calls
+  over silently. The **Me → Make Me the Default Editor…** command calls
   `NSWorkspace.setDefaultApplication(at:toOpenContentType:)` (macOS 12+) for
   each type. macOS shows its own confirmation. Opening files from Finder
   arrives through `application:openURLs:`, which GPUI exposes as `on_open_urls`.
-* **CLI install.** **Editor → Install 'editor' Command** symlinks
-  `/usr/local/bin/editor` → `Editor.app/Contents/Resources/bin/editor`,
+* **CLI install.** **Me → Install 'me' Command** symlinks
+  `/usr/local/bin/me` → `Me.app/Contents/Resources/bin/me`,
   falling back to `~/.local/bin`. `brew install --cask` will do the same.
-* **Linux.** `packaging/linux/editor.desktop` lists the text and markdown MIME
-  types. `xdg-mime default editor.desktop text/markdown text/plain`.
+* **Linux.** `packaging/linux/me.desktop` lists the text and markdown MIME
+  types. `xdg-mime default me.desktop text/markdown text/plain`.
 * **Windows.** Phase 4: "Open with" registry entries from the installer.
 
 ---
@@ -270,17 +270,17 @@ The directory is created with mode 0700.
 
 * [x] Technology decision and plan (this document).
 * [x] Cargo workspace with the six crates.
-* [x] `editor-text`: rope document, selection model, every multi-cursor
+* [x] `me-text`: rope document, selection model, every multi-cursor
       command (Cmd+D, Cmd+L, Cmd+Shift+L, Ctrl+Cmd+G, add cursor above/below,
       column selection), movement, editing, undo/redo with typing coalescing,
       clipboard with per-cursor distribution, find and replace (regex with
       `$1` groups). 67 unit and behaviour tests.
-* [x] `editor-project`: ignore-aware directory listing, background file
+* [x] `me-project`: ignore-aware directory listing, background file
       index with the nucleo fuzzy matcher, parallel streaming project search,
       atomic replace-in-files. 11 tests.
-* [x] `editor-ipc` + `editor` CLI: single instance, `file:line:col`, `-w`,
+* [x] `me-ipc` + `me` CLI: single instance, `file:line:col`, `-w`,
       `-n`, `-`. Unit tests and end-to-end tests against a fake app.
-* [x] `editor-syntax`: 20 languages, built lazily, incremental parsing on a
+* [x] `me-syntax`: 20 languages, built lazily, incremental parsing on a
       background thread, highlighting of the visible byte range only.
 * [x] App: sidebar file tree, Sublime-style preview tabs, editor element
       (viewport-only shaping, multi-cursor, Option-drag column selection, IME,
@@ -295,21 +295,21 @@ The directory is created with mode 0700.
 **Verified here** (Linux, X11, software rendering): every crate's tests
 pass, and the app was driven with real input. That covered opening folders,
 expanding the tree, previewing markdown, Cmd+T, Cmd+D, Option-drag column
-editing, find, project search, dark mode, and `editor -w` launching the app
+editing, find, project search, dark mode, and `me -w` launching the app
 and returning when the tab closed.
 
 **Not yet verified by hand:** the macOS build. CI builds and bundles it on
 `macos-15`, but nobody has run the native look (vibrancy, traffic lights,
-Finder "Open With", **Make Default Editor…**) on a Mac yet. That is the first
+Finder "Open With", **Make Me the Default Editor…**) on a Mac yet. That is the first
 task of Phase 1.
 
 ### Phase 1: Daily driver for reading (MVP)
 
 * Run on macOS and fix whatever the native shell needs: traffic-light
-  spacing, vibrancy, menu shortcuts, Finder opens, **Install 'editor'
-  Command**, **Make Default Editor…**.
+  spacing, vibrancy, menu shortcuts, Finder opens, **Install 'me'
+  Command**, **Make Me the Default Editor…**.
 * Measure cold start on an M-series Mac against the 100 ms budget
-  (`EDITOR_TRACE_STARTUP=1`) and trim anything on the startup path.
+  (`ME_TRACE_STARTUP=1`) and trim anything on the startup path.
 * Tabs: overflow scrolling, drag to reorder, context menu (close others,
   reveal in Finder, copy path).
 * Find bar: match count ("3 of 12"), keep the find query per tab.
@@ -377,5 +377,5 @@ LSP is the most likely later addition; the architecture leaves room for it.
   the next occurrence. If you want Cmd+L to do something else (for example
   VS Code's `Cmd+Shift+L`, select all occurrences), change it in
   `crates/app/src/actions.rs`.
-* **Name.** The working title is "Editor" and the CLI command is `editor`.
-  Renaming means changing the bundle name and the binary name.
+* **Name.** The app is called **Me** ("my editor"), the CLI command is `me`,
+  and the bundle id is `com.erkie.me`.

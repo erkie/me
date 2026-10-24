@@ -1,9 +1,9 @@
 //! Colors and fonts. Two built-in palettes modelled on macOS and Xcode, picked
 //! from the system appearance and swapped live when it changes.
 
-use editor_syntax::Highlight;
 use gpui::{App, Global, Hsla, SharedString, WindowAppearance, font, rgb, rgba};
 use gpui_component::{Theme, ThemeMode};
+use me_syntax::Highlight;
 
 #[derive(Clone, Debug)]
 pub struct Palette {
@@ -255,8 +255,8 @@ pub fn init(appearance: WindowAppearance, cx: &mut App) {
 /// Switches to the palette for `appearance` and restyles gpui-component's
 /// widgets (inputs, markdown) to match.
 pub fn apply(appearance: WindowAppearance, cx: &mut App) {
-    // EDITOR_APPEARANCE=dark|light overrides the system (handy for testing).
-    let appearance = match std::env::var("EDITOR_APPEARANCE").as_deref() {
+    // ME_APPEARANCE=dark|light overrides the system (handy for testing).
+    let appearance = match std::env::var("ME_APPEARANCE").as_deref() {
         Ok("dark") => WindowAppearance::Dark,
         Ok("light") => WindowAppearance::Light,
         _ => appearance,

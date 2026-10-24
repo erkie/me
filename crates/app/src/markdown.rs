@@ -97,7 +97,7 @@ impl MarkdownPreview {
         let path_part = url.split('#').next().unwrap_or(url);
         let decoded = path_part.replace("%20", " ");
         let base = self.editor.read(cx).path()?.parent()?.to_path_buf();
-        Some(editor_ipc::normalize(&base.join(decoded)))
+        Some(me_ipc::normalize(&base.join(decoded)))
     }
 }
 

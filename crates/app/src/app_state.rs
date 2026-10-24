@@ -4,13 +4,13 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use editor_ipc::{OpenPath, Request, Response};
 use futures::channel::mpsc::UnboundedSender;
 use gpui::{
     App, AppContext, Bounds, Entity, Global, Point, TitlebarOptions, WindowBackgroundAppearance,
     WindowBounds, WindowHandle, WindowId, WindowOptions, point, px, size,
 };
 use gpui_component::Root;
+use me_ipc::{OpenPath, Request, Response};
 
 use crate::workspace::{OpenOptions, Workspace};
 
@@ -82,7 +82,7 @@ pub fn open_window(
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         titlebar: Some(TitlebarOptions {
-            title: Some("Editor".into()),
+            title: Some("Me".into()),
             appears_transparent: true,
             traffic_light_position: Some(point(px(13.), px(13.))),
         }),
@@ -92,7 +92,7 @@ pub fn open_window(
             WindowBackgroundAppearance::Opaque
         },
         window_min_size: Some(size(px(480.), px(320.))),
-        app_id: Some("editor".into()),
+        app_id: Some("me".into()),
         ..Default::default()
     };
     let mut workspace = None;
@@ -268,7 +268,7 @@ pub fn open(
     }
 
     if target.is_none() {
-        // Plain `editor`: show something.
+        // Plain `me`: show something.
         match workspaces(cx).last().cloned() {
             Some((handle, _)) => {
                 handle

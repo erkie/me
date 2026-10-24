@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds dist/Editor.app (release) with the `editor` CLI inside it.
+# Builds dist/Me.app (release) with the `me` CLI inside it.
 #
 #   script/bundle-macos             # host architecture
 #   script/bundle-macos --universal # arm64 + x86_64
@@ -24,38 +24,42 @@ build=$(git rev-list --count HEAD 2>/dev/null || echo 1)
 
 if $universal; then
   rustup target add aarch64-apple-darwin x86_64-apple-darwin >/dev/null
-  cargo build --release -p editor-app -p editor-cli --target aarch64-apple-darwin
-  cargo build --release -p editor-app -p editor-cli --target x86_64-apple-darwin
+  cargo build --release -p me-app -p me-cli --target aarch64-apple-darwin
+  cargo build --release -p me-app -p me-cli --target x86_64-apple-darwin
   mkdir -p target/universal
-  for bin in editor-app editor; do
+  for bin in me-app me; do
     lipo -create -output "target/universal/$bin" \
       "target/aarch64-apple-darwin/release/$bin" "target/x86_64-apple-darwin/release/$bin"
   done
   out=target/universal
 else
-  cargo build --release -p editor-app -p editor-cli
+  cargo build --release -p me-app -p me-cli
   out=target/release
 fi
 
-app=dist/Editor.app
+app=dist/Me.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/bin"
-cp "$out/editor-app" "$app/Contents/MacOS/Editor"
-cp "$out/editor" "$app/Contents/Resources/bin/editor"
+cp "$out/me-app" "$app/Contents/MacOS/Me"
+cp "$out/me" "$app/Contents/Resources/bin/me"
 sed -e "s/@VERSION@/$version/" -e "s/@BUILD@/$build/" packaging/macos/Info.plist > "$app/Contents/Info.plist"
 script/make-icns assets/logo/app-icon-1024.png "$app/Contents/Resources/AppIcon.icns"
 
-codesign --force --options runtime --sign "${CODESIGN_IDENTITY:--}" "$app/Contents/Resources/bin/editor"
+codesign --force --options runtime --sign "${CODESIGN_IDENTITY:--}" "$app/Contents/Resources/bin/me"
 codesign --force --options runtime --sign "${CODESIGN_IDENTITY:--}" "$app"
 echo "Built $app ($version, build $build)"
 
 if $install; then
-  rm -rf /Applications/Editor.app
+  rm -rf /Applications/Me.app
   cp -R "$app" /Applications/
-  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /Applications/Editor.app
-  if ln -sf /Applications/Editor.app/Contents/Resources/bin/editor /usr/local/bin/editor 2>/dev/null; then
-    echo "Linked /usr/local/bin/editor"
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /Applications/Me.app
+  if ln -sf /Applications/Me.app/Contents/Resources/bin/me /usr/local/bin/me 2>/dev/null; then
+    echo "Linked /usr/local/bin/me"
   else
-    echo "Run: sudo ln -sf /Applications/Editor.app/Contents/Resources/bin/editor /usr/local/bin/editor"
+    echo "Run: sudo ln -sf /Applications/Me.app/Contents/Resources/bin/me /usr/local/bin/me"
+  fi
+  # The app was called Editor before; point out leftovers of that install.
+  if [ -d /Applications/Editor.app ] && grep -q com.erkie.editor /Applications/Editor.app/Contents/Info.plist 2>/dev/null; then
+    echo "Note: /Applications/Editor.app is the old build of this app; you can delete it (and /usr/local/bin/editor)."
   fi
 fi

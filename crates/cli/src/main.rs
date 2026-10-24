@@ -1,7 +1,7 @@
-//! `editor`: open files and folders in the editor app.
+//! `me`: open files and folders in the Me app.
 //!
 //! This binary has no GUI dependencies so it starts in about a millisecond.
-//! It talks to the running app over a socket (see `editor-ipc`), launching
+//! It talks to the running app over a socket (see `me-ipc`), launching
 //! the app first if needed.
 
 use std::env;
@@ -11,18 +11,18 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
 
-use editor_ipc::{OpenPath, Request, parse_path_arg};
+use me_ipc::{OpenPath, Request, parse_path_arg};
 
 const HELP: &str = "\
-Usage: editor [options] [path[:line[:column]] ...]
+Usage: me [options] [path[:line[:column]] ...]
 
-Opens files and folders in Editor, launching it if needed.
+Opens files and folders in Me, launching it if needed.
 
 Examples:
-  editor .                 open the current folder
-  editor README.md         open a file
-  editor src/main.rs:42:7  open a file at line 42, column 7
-  git commit               with EDITOR=\"editor -w\", edit the message in Editor
+  me .                 open the current folder
+  me README.md         open a file
+  me src/main.rs:42:7  open a file at line 42, column 7
+  git commit           with EDITOR=\"me -w\", edit the message in Me
 
 Options:
   -w, --wait        wait for the opened files to be closed before returning
@@ -91,18 +91,18 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         Parsed::Version => {
-            println!("editor {}", env!("CARGO_PKG_VERSION"));
+            println!("me {}", env!("CARGO_PKG_VERSION"));
             return ExitCode::SUCCESS;
         }
         Parsed::Error(message) => {
-            eprintln!("editor: {message}\n\n{HELP}");
+            eprintln!("me: {message}\n\n{HELP}");
             return ExitCode::from(2);
         }
     };
     match run(args) {
         Ok(code) => code,
         Err(err) => {
-            eprintln!("editor: {err}");
+            eprintln!("me: {err}");
             ExitCode::FAILURE
         }
     }
@@ -114,7 +114,7 @@ fn run(args: Args) -> io::Result<ExitCode> {
     let stdin = if args.stdin {
         let mut text = String::new();
         if io::stdin().is_terminal() {
-            eprintln!("editor: reading from stdin (Ctrl+D to finish)");
+            eprintln!("me: reading from stdin (Ctrl+D to finish)");
         }
         io::stdin().read_to_string(&mut text)?;
         Some(text)
@@ -133,14 +133,14 @@ fn run(args: Args) -> io::Result<ExitCode> {
 
 #[cfg(unix)]
 fn send(request: Request, wait: bool) -> io::Result<ExitCode> {
-    use editor_ipc::{Client, Response};
+    use me_ipc::{Client, Response};
 
-    let socket = editor_ipc::socket_path();
+    let socket = me_ipc::socket_path();
     let mut client = match Client::connect(&socket) {
         Ok(client) => client,
         Err(_) => {
             launch_app()?;
-            let timeout = env::var("EDITOR_CONNECT_TIMEOUT_MS")
+            let timeout = env::var("ME_CONNECT_TIMEOUT_MS")
                 .ok()
                 .and_then(|ms| ms.parse().ok())
                 .map_or(Duration::from_secs(10), Duration::from_millis);
@@ -170,9 +170,7 @@ fn send(request: Request, wait: bool) -> io::Result<ExitCode> {
             Some(Response::Pong) => {}
             None => {
                 return if wait && !waiting.is_empty() {
-                    Err(io::Error::other(
-                        "the editor quit before the file was closed",
-                    ))
+                    Err(io::Error::other("Me quit before the file was closed"))
                 } else {
                     Ok(ExitCode::SUCCESS)
                 };
@@ -182,15 +180,15 @@ fn send(request: Request, wait: bool) -> io::Result<ExitCode> {
 }
 
 #[cfg(unix)]
-fn connect_with_retry(socket: &Path, timeout: Duration) -> io::Result<editor_ipc::Client> {
+fn connect_with_retry(socket: &Path, timeout: Duration) -> io::Result<me_ipc::Client> {
     let start = Instant::now();
     loop {
-        match editor_ipc::Client::connect(socket) {
+        match me_ipc::Client::connect(socket) {
             Ok(client) => return Ok(client),
             Err(err) if start.elapsed() > timeout => {
                 return Err(io::Error::new(
                     err.kind(),
-                    format!("could not reach the editor at {}: {err}", socket.display()),
+                    format!("could not reach Me at {}: {err}", socket.display()),
                 ));
             }
             Err(_) => std::thread::sleep(Duration::from_millis(10)),
@@ -236,17 +234,17 @@ fn launch_app() -> io::Result<()> {
     spawn_detached(&app)
 }
 
-/// The GUI binary: `$EDITOR_APP`, or `editor-app` next to this binary.
+/// The GUI binary: `$ME_APP`, or `me-app` next to this binary.
 fn find_app() -> io::Result<PathBuf> {
-    if let Some(app) = env::var_os("EDITOR_APP") {
+    if let Some(app) = env::var_os("ME_APP") {
         return Ok(PathBuf::from(app));
     }
     let exe = env::current_exe()?;
     let exe = exe.canonicalize().unwrap_or(exe);
     let name = if cfg!(windows) {
-        "editor-app.exe"
+        "me-app.exe"
     } else {
-        "editor-app"
+        "me-app"
     };
     let sibling = exe.with_file_name(name);
     if sibling.exists() {
@@ -255,17 +253,17 @@ fn find_app() -> io::Result<PathBuf> {
     Err(io::Error::new(
         io::ErrorKind::NotFound,
         format!(
-            "could not find the editor app (looked for {})",
+            "could not find the Me app (looked for {})",
             sibling.display()
         ),
     ))
 }
 
-/// `Editor.app` containing this binary (`Contents/Resources/bin/editor`),
+/// `Me.app` containing this binary (`Contents/Resources/bin/me`),
 /// or the installed app.
 #[cfg(target_os = "macos")]
 fn find_bundle() -> Option<PathBuf> {
-    if env::var_os("EDITOR_APP").is_some() {
+    if env::var_os("ME_APP").is_some() {
         return None;
     }
     let exe = env::current_exe().ok()?;
@@ -277,11 +275,11 @@ fn find_bundle() -> Option<PathBuf> {
     {
         return Some(bundle);
     }
-    // A dev build next to a sibling editor-app runs that instead.
-    if exe.with_file_name("editor-app").exists() {
+    // A dev build next to a sibling me-app runs that instead.
+    if exe.with_file_name("me-app").exists() {
         return None;
     }
-    let installed = PathBuf::from("/Applications/Editor.app");
+    let installed = PathBuf::from("/Applications/Me.app");
     installed.exists().then_some(installed)
 }
 

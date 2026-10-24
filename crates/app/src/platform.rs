@@ -1,4 +1,4 @@
-//! OS integration: installing the `editor` command and registering as the
+//! OS integration: installing the `me` command and registering as the
 //! default editor.
 
 use std::path::PathBuf;
@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use gpui::{App, PromptLevel};
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub const BUNDLE_ID: &str = "com.erkie.editor";
+pub const BUNDLE_ID: &str = "com.erkie.me";
 
 /// Content types we offer to become the default editor for.
 #[cfg(target_os = "macos")]
@@ -28,10 +28,10 @@ const CONTENT_TYPES: &[&str] = &[
     "public.make-source",
     "com.netscape.javascript-source",
     "net.daringfireball.markdown",
-    "com.erkie.editor.rust-source",
-    "com.erkie.editor.toml",
-    "com.erkie.editor.typescript-source",
-    "com.erkie.editor.go-source",
+    "com.erkie.me.rust-source",
+    "com.erkie.me.toml",
+    "com.erkie.me.typescript-source",
+    "com.erkie.me.go-source",
 ];
 
 #[cfg(target_os = "linux")]
@@ -67,37 +67,33 @@ fn notify(title: String, detail: Option<String>, cx: &mut App) {
 /// The bundled CLI binary.
 fn cli_binary() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
-    // Inside Editor.app: Contents/MacOS/Editor -> Contents/Resources/bin/editor
-    let bundled = exe.parent()?.parent()?.join("Resources/bin/editor");
+    // Inside Me.app: Contents/MacOS/Me -> Contents/Resources/bin/me
+    let bundled = exe.parent()?.parent()?.join("Resources/bin/me");
     if bundled.exists() {
         return Some(bundled);
     }
-    let sibling = exe.with_file_name("editor");
+    let sibling = exe.with_file_name("me");
     sibling.exists().then_some(sibling)
 }
 
 pub fn install_cli(cx: &mut App) {
     let Some(cli) = cli_binary() else {
-        notify(
-            "Could not find the bundled 'editor' command.".into(),
-            None,
-            cx,
-        );
+        notify("Could not find the bundled 'me' command.".into(), None, cx);
         return;
     };
     let result = install_cli_at(&cli);
     match result {
         Ok(path) => notify(
-            format!("Installed 'editor' at {}", path.display()),
-            Some("Open a folder with `editor .`. To use it for git commits, add `export EDITOR=\"editor -w\"` to your shell profile.".into()),
+            format!("Installed 'me' at {}", path.display()),
+            Some("Open a folder with `me .`. To use it for git commits, add `export EDITOR=\"me -w\"` to your shell profile.".into()),
             cx,
         ),
-        Err(err) => notify("Could not install the 'editor' command.".into(), Some(err), cx),
+        Err(err) => notify("Could not install the 'me' command.".into(), Some(err), cx),
     }
 }
 
 fn install_cli_at(cli: &std::path::Path) -> Result<PathBuf, String> {
-    let system = PathBuf::from("/usr/local/bin/editor");
+    let system = PathBuf::from("/usr/local/bin/me");
     let link = |dest: &std::path::Path| -> std::io::Result<()> {
         if let Some(dir) = dest.parent() {
             std::fs::create_dir_all(dir)?;
@@ -115,7 +111,7 @@ fn install_cli_at(cli: &std::path::Path) -> Result<PathBuf, String> {
     {
         // /usr/local/bin usually needs admin rights: ask macOS for them.
         let script = format!(
-            "do shell script \"mkdir -p /usr/local/bin && ln -sf '{}' /usr/local/bin/editor\" with administrator privileges",
+            "do shell script \"mkdir -p /usr/local/bin && ln -sf '{}' /usr/local/bin/me\" with administrator privileges",
             cli.display()
         );
         let status = std::process::Command::new("osascript")
@@ -128,7 +124,7 @@ fn install_cli_at(cli: &std::path::Path) -> Result<PathBuf, String> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or("HOME is not set")?;
-    let user = home.join(".local/bin/editor");
+    let user = home.join(".local/bin/me");
     link(&user).map_err(|e| e.to_string())?;
     Ok(user)
 }
@@ -136,7 +132,7 @@ fn install_cli_at(cli: &std::path::Path) -> Result<PathBuf, String> {
 pub fn make_default_editor(cx: &mut App) {
     match register_default() {
         Ok(n) => notify(
-            format!("Editor is now the default app for {n} kinds of text and code files."),
+            format!("Me is now the default app for {n} kinds of text and code files."),
             Some("You can change this per file type in Finder's Get Info → Open With.".into()),
             cx,
         ),
@@ -184,7 +180,7 @@ fn register_default() -> Result<usize, String> {
     }
     if ok == 0 {
         return Err(format!(
-            "Launch Services returned error {last_error}. Is Editor.app in /Applications?"
+            "Launch Services returned error {last_error}. Is Me.app in /Applications?"
         ));
     }
     Ok(ok)
@@ -194,7 +190,7 @@ fn register_default() -> Result<usize, String> {
 fn register_default() -> Result<usize, String> {
     let status = std::process::Command::new("xdg-mime")
         .arg("default")
-        .arg("editor.desktop")
+        .arg("me.desktop")
         .args(MIME_TYPES)
         .status()
         .map_err(|e| format!("xdg-mime: {e}"))?;

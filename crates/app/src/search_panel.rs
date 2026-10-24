@@ -7,8 +7,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use editor_project::{FileMatches, SearchOptions, SearchStats};
-use editor_text::SearchQuery;
 use futures::StreamExt;
 use futures::channel::mpsc;
 use gpui::{
@@ -18,6 +16,8 @@ use gpui::{
     Window, div, px, svg, uniform_list,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
+use me_project::{FileMatches, SearchOptions, SearchStats};
+use me_text::SearchQuery;
 
 use crate::find_bar::{text_button, toggle_button};
 use crate::theme;
@@ -213,7 +213,7 @@ impl SearchPanel {
         let root = self.root.clone();
         let (tx, mut rx) = mpsc::unbounded::<FileMatches>();
         let search = cx.background_executor().spawn(async move {
-            editor_project::search(&root, &options, &cancel, |found| {
+            me_project::search(&root, &options, &cancel, |found| {
                 let _ = tx.unbounded_send(found);
             })
         });
