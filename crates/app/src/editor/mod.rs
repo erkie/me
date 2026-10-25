@@ -2,9 +2,11 @@
 //! and IME input, loads and saves the file, and keeps the syntax tree in
 //! sync in the background. Painting lives in [`element`].
 
+pub mod completion;
 pub mod diagnostics;
 pub mod element;
 pub mod hover;
+pub mod snippet;
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -26,6 +28,7 @@ use me_text::{
 use serde::{Deserialize, Serialize};
 
 use crate::actions::*;
+use completion::{ActionItem, ActionsMenu, CompletionMenu, CompletionTrigger, Completions};
 use diagnostics::Diagnostic;
 use element::{EditorElement, LayoutSnapshot, WrapCache};
 use hover::{HoverInfo, HoverState};
@@ -37,7 +40,7 @@ const HOVER_DELAY: Duration = Duration::from_millis(400);
 /// How long a hover stays after the pointer leaves it (to reach it).
 const HOVER_GRACE: Duration = Duration::from_millis(250);
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum EditorEvent {
     Changed,
     DirtyChanged,
@@ -58,6 +61,46 @@ pub enum EditorEvent {
         path: PathBuf,
         line: Option<u32>,
     },
+    /// Completions are wanted at `pos` (the workspace asks the language
+    /// server, and answers with [`EditorView::show_completions`]).
+    Completions {
+        trigger: CompletionTrigger,
+        pos: usize,
+    },
+    /// The selected completion needs its documentation
+    /// ([`EditorView::set_resolved`]).
+    ResolveCompletion {
+        id: u64,
+        index: usize,
+    },
+    /// Code actions for these chars are wanted
+    /// ([`EditorView::show_code_actions`]).
+    CodeActions {
+        range: Range<usize>,
+    },
+    /// The code action at `index` of list `id` was chosen.
+    CodeActionPicked {
+        id: u64,
+        index: usize,
+    },
+    /// A completion was accepted before the server filled in the rest of
+    /// it: the import it needs comes when it's resolved.
+    ResolveAccepted {
+        item: Box<me_lsp::types::CompletionItem>,
+    },
+    /// An accepted completion asks for a command to run (the server's, or
+    /// `editor.action.triggerSuggest`).
+    RunCommand {
+        command: String,
+        arguments: Option<Vec<serde_json::Value>>,
+    },
+}
+
+/// Tab stops of an inserted snippet still to visit (byte ranges, moved
+/// along with edits).
+struct SnippetSession {
+    stops: Vec<Vec<Range<usize>>>,
+    current: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -161,6 +204,11 @@ pub struct EditorView {
     hover_timer: Option<(Range<usize>, Task<()>)>,
     hover_hide: Option<Task<()>>,
     next_hover_id: u64,
+    pub(crate) completion: Option<CompletionMenu>,
+    pub(crate) actions_menu: Option<ActionsMenu>,
+    snippet: Option<SnippetSession>,
+    next_menu_id: u64,
+    resolve_task: Option<Task<()>>,
     _subscriptions: Vec<gpui::Subscription>,
 }
 
@@ -182,6 +230,8 @@ impl EditorView {
                 this.cursor_visible = false;
                 this.drag = None;
                 this.hide_hover(cx);
+                this.completion = None;
+                this.actions_menu = None;
                 cx.notify();
             }),
         ];
@@ -220,6 +270,11 @@ impl EditorView {
             hover_timer: None,
             hover_hide: None,
             next_hover_id: 0,
+            completion: None,
+            actions_menu: None,
+            snippet: None,
+            next_menu_id: 0,
+            resolve_task: None,
             _subscriptions: subscriptions,
         }
     }
@@ -537,6 +592,341 @@ impl EditorView {
         self.did_change(cx);
     }
 
+    // ---------------------------------------------------------------------
+    // Completions, code actions and snippets
+    // ---------------------------------------------------------------------
+
+    /// The cursor, when there's just one and nothing is selected.
+    pub(crate) fn cursor(&self) -> Option<usize> {
+        let sels = self.state.selections();
+        (sels.len() == 1 && sels.primary().is_empty()).then(|| sels.primary().head)
+    }
+
+    /// Where the word ending at `pos` starts.
+    pub fn word_start(&self, pos: usize) -> usize {
+        let rope = self.state.doc.rope();
+        let mut start = pos.min(rope.len_chars());
+        while start > 0 && completion::is_word_char(rope.char(start - 1)) {
+            start -= 1;
+        }
+        start
+    }
+
+    fn close_menus(&mut self) {
+        self.completion = None;
+        self.actions_menu = None;
+        self.resolve_task = None;
+    }
+
+    /// What was typed of the word starting at `start`, while the cursor is
+    /// still in it.
+    pub(crate) fn typed_since(&self, start: usize) -> Option<String> {
+        let cursor = self.cursor()?;
+        let doc = &self.state.doc;
+        if cursor < start || doc.char_to_line(cursor) != doc.char_to_line(start) {
+            return None;
+        }
+        let typed = doc.text(start..cursor);
+        typed.chars().all(completion::is_word_char).then_some(typed)
+    }
+
+    /// Shows the completions offered for the word starting at `start`.
+    pub fn show_completions(
+        &mut self,
+        start: usize,
+        completions: Completions,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(typed) = self.typed_since(start) else {
+            return;
+        };
+        self.next_menu_id += 1;
+        let mut menu = CompletionMenu::new(self.next_menu_id, start, completions);
+        menu.filter(&typed);
+        if menu.matches.is_empty() {
+            self.completion = None;
+        } else {
+            self.hide_hover(cx);
+            self.actions_menu = None;
+            self.completion = Some(menu);
+            self.schedule_resolve(cx);
+        }
+        cx.notify();
+    }
+
+    /// The buffer's own words that start like the word at `pos` (for files
+    /// without a language server).
+    pub fn buffer_completions(&self, pos: usize) -> Completions {
+        let start = self.word_start(pos);
+        let rope = self.state.doc.rope();
+        let typed = self.state.doc.text(start..pos);
+        Completions {
+            items: completion::buffer_words(rope, &typed, start..pos),
+            incomplete: false,
+            encoding: me_lsp::Encoding::Utf16,
+            asked: me_lsp::position(rope, pos, me_lsp::Encoding::Utf16),
+            resolvable: false,
+        }
+    }
+
+    /// After an edit: keeps the list in step with the word, or closes it.
+    fn update_completion(&mut self, cx: &mut Context<Self>) {
+        let Some(start) = self.completion.as_ref().map(|m| m.start) else {
+            return;
+        };
+        match self.typed_since(start) {
+            Some(typed) => {
+                let menu = self.completion.as_mut().unwrap();
+                menu.filter(&typed);
+                if menu.matches.is_empty() && !menu.incomplete {
+                    self.completion = None;
+                } else {
+                    self.schedule_resolve(cx);
+                }
+            }
+            None => self.completion = None,
+        }
+        cx.notify();
+    }
+
+    /// A character was typed (one cursor): the list refilters (in
+    /// `update_completion`), or the workspace decides whether to ask for one.
+    fn after_typed(&mut self, ch: char, cx: &mut Context<Self>) {
+        let Some(pos) = self.cursor() else { return };
+        if let Some(menu) = &self.completion {
+            if menu.incomplete {
+                cx.emit(EditorEvent::Completions {
+                    trigger: CompletionTrigger::Incomplete,
+                    pos,
+                });
+            }
+            return;
+        }
+        cx.emit(EditorEvent::Completions {
+            trigger: CompletionTrigger::Typed(ch),
+            pos,
+        });
+    }
+
+    /// Asks for the selected item's documentation, once it stays selected
+    /// for a moment.
+    fn schedule_resolve(&mut self, cx: &mut Context<Self>) {
+        let Some(menu) = &self.completion else { return };
+        let Some((index, _)) = menu.selected_entry().filter(|(_, e)| !e.resolved) else {
+            return;
+        };
+        if !menu.resolvable {
+            return;
+        }
+        let id = menu.id;
+        self.resolve_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(60))
+                .await;
+            this.update(cx, |this, cx| {
+                if let Some(menu) = this.completion.as_mut().filter(|m| m.id == id) {
+                    menu.entries[index].resolved = true;
+                    cx.emit(EditorEvent::ResolveCompletion { id, index });
+                }
+            })
+            .ok();
+        }));
+    }
+
+    /// The item to resolve for [`EditorEvent::ResolveCompletion`].
+    pub fn completion_item(&self, id: u64, index: usize) -> Option<me_lsp::types::CompletionItem> {
+        let menu = self.completion.as_ref().filter(|m| m.id == id)?;
+        Some(menu.entries.get(index)?.item.clone())
+    }
+
+    /// The server's fuller version of a completion (documentation, and
+    /// what else it filled in).
+    pub fn set_resolved(
+        &mut self,
+        id: u64,
+        index: usize,
+        resolved: me_lsp::types::CompletionItem,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(entry) = self
+            .completion
+            .as_mut()
+            .filter(|m| m.id == id)
+            .and_then(|m| m.entries.get_mut(index))
+        else {
+            return;
+        };
+        entry.answered = true;
+        let item = &mut entry.item;
+        if resolved.documentation.is_some() {
+            item.documentation = resolved.documentation;
+        }
+        if resolved.detail.is_some() {
+            item.detail = resolved.detail;
+        }
+        if resolved.additional_text_edits.is_some() {
+            item.additional_text_edits = resolved.additional_text_edits;
+        }
+        if item.text_edit.is_none() {
+            item.text_edit = resolved.text_edit;
+        }
+        cx.notify();
+    }
+
+    fn menu_select(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if let Some(menu) = &mut self.completion {
+            menu.select(delta);
+            self.schedule_resolve(cx);
+        } else if let Some(menu) = &mut self.actions_menu {
+            menu.select(delta);
+        }
+        cx.notify();
+    }
+
+    /// The mouse wheel over the completion list: `rows` up or down.
+    pub fn scroll_completion(&mut self, rows: isize, cx: &mut Context<Self>) {
+        if let Some(menu) = &mut self.completion {
+            let max = menu.matches.len().saturating_sub(completion::VISIBLE_ROWS);
+            menu.scroll = menu.scroll.saturating_add_signed(rows).min(max);
+            cx.notify();
+        }
+    }
+
+    /// Puts in the selected completion (or the one in `row`): its text, any
+    /// other edits it brings (imports), as one undo step; a snippet's first
+    /// tab stop is selected.
+    pub fn accept_completion(&mut self, row: Option<usize>, cx: &mut Context<Self>) {
+        let Some(menu) = self.completion.take() else {
+            return;
+        };
+        self.resolve_task = None;
+        cx.notify();
+        let Some(cursor) = self.cursor() else { return };
+        let Some((index, _)) = menu.matches.get(row.unwrap_or(menu.selected)) else {
+            return;
+        };
+        let entry = &menu.entries[*index];
+        let item = &entry.item;
+        let command = item.command.clone();
+        if menu.resolvable && item.data.is_some() && !entry.answered {
+            cx.emit(EditorEvent::ResolveAccepted {
+                item: Box::new(item.clone()),
+            });
+        }
+        let accepted = completion::accept(&menu, item, self.state.doc.rope(), cursor);
+        if let Some(command) = command {
+            cx.emit(EditorEvent::RunCommand {
+                command: command.command,
+                arguments: command.arguments,
+            });
+        }
+        if self.state.doc.text(accepted.range.clone()) == accepted.text
+            && accepted.additional.is_empty()
+            && accepted.snippet.is_none()
+        {
+            return;
+        }
+        let mut changes: Vec<me_text::Change> = accepted
+            .additional
+            .iter()
+            .map(|(r, text)| me_text::Change::new(r.start, r.end, text.as_str()))
+            .collect();
+        changes.push(me_text::Change::new(
+            accepted.range.start,
+            accepted.range.end,
+            accepted.text.as_str(),
+        ));
+        let changes = me_text::ChangeSet::new(changes);
+        let text_start = changes.map_pos(accepted.range.start, me_text::Assoc::Before);
+        let before = self.state.selections().clone();
+        let mut after = SelectionSet::single(Selection::cursor(
+            text_start + accepted.text.chars().count(),
+        ));
+        self.state.doc.seal_undo();
+        self.state
+            .doc
+            .apply(changes, before, &mut after, EditKind::Other);
+        self.state.doc.seal_undo();
+        self.state.set_selections(after);
+        self.did_change(cx);
+        if let Some(snippet) = accepted.snippet {
+            let rope = self.state.doc.rope();
+            let byte = |c: usize| rope.char_to_byte((text_start + c).min(rope.len_chars()));
+            let stops = snippet
+                .stops
+                .iter()
+                .map(|ranges| ranges.iter().map(|r| byte(r.start)..byte(r.end)).collect())
+                .collect();
+            self.snippet = Some(SnippetSession { stops, current: 0 });
+            self.select_snippet_stop(cx);
+        }
+    }
+
+    fn select_snippet_stop(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = &self.snippet else { return };
+        let rope = self.state.doc.rope();
+        let selections: Vec<Selection> = session.stops[session.current]
+            .iter()
+            .map(|r| Selection::new(rope.byte_to_char(r.start), rope.byte_to_char(r.end)))
+            .collect();
+        if session.current + 1 >= session.stops.len() {
+            self.snippet = None;
+        }
+        if !selections.is_empty() {
+            self.state.set_selections(SelectionSet::new(selections, 0));
+        }
+        self.autoscroll = Some(Autoscroll::Fit);
+        self.restart_blink(cx);
+        cx.notify();
+    }
+
+    /// Tab / Shift+Tab in a snippet: the next (previous) tab stop.
+    fn snippet_jump(&mut self, forward: bool, cx: &mut Context<Self>) {
+        self.close_menus();
+        let Some(session) = &mut self.snippet else {
+            return;
+        };
+        session.current = if forward {
+            (session.current + 1).min(session.stops.len() - 1)
+        } else {
+            session.current.saturating_sub(1)
+        };
+        self.select_snippet_stop(cx);
+    }
+
+    /// Shows a list of code actions at `anchor`; returns its id for
+    /// [`EditorEvent::CodeActionPicked`].
+    pub fn show_code_actions(
+        &mut self,
+        anchor: usize,
+        items: Vec<ActionItem>,
+        cx: &mut Context<Self>,
+    ) -> u64 {
+        self.next_menu_id += 1;
+        let selected = items.iter().position(|i| i.disabled.is_none()).unwrap_or(0);
+        self.hide_hover(cx);
+        self.completion = None;
+        self.actions_menu = Some(ActionsMenu {
+            id: self.next_menu_id,
+            anchor,
+            items,
+            selected,
+        });
+        cx.notify();
+        self.next_menu_id
+    }
+
+    pub fn pick_code_action(&mut self, row: Option<usize>, cx: &mut Context<Self>) {
+        let Some(menu) = self.actions_menu.take() else {
+            return;
+        };
+        let index = row.unwrap_or(menu.selected);
+        if menu.items.get(index).is_some_and(|i| i.disabled.is_none()) {
+            cx.emit(EditorEvent::CodeActionPicked { id: menu.id, index });
+        }
+        cx.notify();
+    }
+
     /// What a session needs to bring this editor back.
     pub fn view_state(&self) -> (usize, f64) {
         (self.state.selections().primary().head, self.scroll.y)
@@ -733,6 +1123,13 @@ impl EditorView {
             syntax.edit(&edits);
         }
         diagnostics::map_through(&mut self.diagnostics, &edits);
+        if let Some(snippet) = &mut self.snippet {
+            for edit in &edits {
+                for range in snippet.stops.iter_mut().flatten() {
+                    *range = diagnostics::map_range(range.clone(), edit);
+                }
+            }
+        }
         true
     }
 
@@ -741,6 +1138,7 @@ impl EditorView {
             self.schedule_parse(cx);
             cx.emit(EditorEvent::Changed);
         }
+        self.update_completion(cx);
         let dirty = self.state.doc.is_dirty();
         if dirty != self.was_dirty {
             self.was_dirty = dirty;
@@ -812,6 +1210,8 @@ impl EditorView {
     fn motion(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut EditorState)) {
         f(&mut self.state);
         self.active_match = None;
+        self.close_menus();
+        self.snippet = None;
         self.did_move(cx);
     }
 
@@ -997,6 +1397,8 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) {
         window.focus(&self.focus_handle, cx);
+        self.close_menus();
+        self.snippet = None;
         let Some(layout) = &self.layout else { return };
         let hit = layout.hit(position, &self.state);
         // Option-click adds (or removes) a cursor and Option-drag selects a
@@ -1170,15 +1572,18 @@ impl EditorView {
             }
         }
         let mut menu = gpui_component::native_menu::NativeMenu::new();
-        let on_identifier = self
-            .identifier_at(self.state.selections().primary().head)
-            .is_some();
+        let head = self.state.selections().primary().head;
+        let on_identifier = self.identifier_at(head).is_some();
         if on_identifier && self.syntax.is_some() {
             menu = menu
                 .menu("Go to Definition", Box::new(GoToDefinition))
                 .menu("Find References", Box::new(FindReferences))
                 .menu_with_disabled("Rename Symbol", self.read_only, Box::new(RenameSymbol))
-                .menu("Show Hover", Box::new(ShowHover))
+                .menu("Show Hover", Box::new(ShowHover));
+        }
+        if (on_identifier && self.syntax.is_some()) || !self.diagnostics_at(head).is_empty() {
+            menu = menu
+                .menu_with_disabled("Code Actions…", self.read_only, Box::new(ShowCodeActions))
                 .separator();
         }
         let mut menu = menu
@@ -1309,6 +1714,10 @@ impl gpui::EntityInputHandler for EditorView {
         self.marked = None;
         self.active_match = None;
         self.did_change(cx);
+        let mut chars = text.chars();
+        if let (Some(ch), None) = (chars.next(), chars.next()) {
+            self.after_typed(ch, cx);
+        }
     }
 
     fn replace_and_mark_text_in_range(
@@ -1384,6 +1793,16 @@ impl Render for EditorView {
         context.add("Editor");
         if self.state.selections().len() > 1 {
             context.add("multi_cursor");
+        }
+        let completing = self
+            .completion
+            .as_ref()
+            .is_some_and(|m| !m.matches.is_empty());
+        if completing || self.actions_menu.is_some() {
+            context.add("showing_menu");
+        }
+        if self.snippet.is_some() {
+            context.add("in_snippet");
         }
         div()
             .id("editor")
@@ -1560,7 +1979,12 @@ impl Render for EditorView {
                 })
             }))
             .on_action(cx.listener(|this, _: &Cancel, _, cx| {
-                if this.hover.as_ref().is_some_and(HoverState::is_visible) {
+                if this.completion.is_some() || this.actions_menu.is_some() {
+                    this.close_menus();
+                    cx.notify();
+                } else if this.snippet.take().is_some() {
+                    cx.notify();
+                } else if this.hover.as_ref().is_some_and(HoverState::is_visible) {
                     this.hide_hover(cx);
                 } else if this.state.selections().len() > 1
                     || !this.state.selections().primary().is_empty()
@@ -1587,6 +2011,35 @@ impl Render for EditorView {
                 let head = this.state.selections().primary().head;
                 this.show_hover_at(head, true, cx);
             }))
+            .on_action(cx.listener(|this, _: &ShowCompletions, _, cx| {
+                if let Some(pos) = this.cursor() {
+                    cx.emit(EditorEvent::Completions {
+                        trigger: CompletionTrigger::Manual,
+                        pos,
+                    });
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ShowCodeActions, _, cx| {
+                let range = this.state.selections().primary().range();
+                cx.emit(EditorEvent::CodeActions { range });
+            }))
+            .on_action(cx.listener(|this, _: &MenuUp, _, cx| this.menu_select(-1, cx)))
+            .on_action(cx.listener(|this, _: &MenuDown, _, cx| this.menu_select(1, cx)))
+            .on_action(cx.listener(|this, _: &MenuPageUp, _, cx| {
+                this.menu_select(-(completion::VISIBLE_ROWS as isize), cx)
+            }))
+            .on_action(cx.listener(|this, _: &MenuPageDown, _, cx| {
+                this.menu_select(completion::VISIBLE_ROWS as isize, cx)
+            }))
+            .on_action(cx.listener(|this, _: &MenuConfirm, _, cx| {
+                if this.completion.is_some() {
+                    this.accept_completion(None, cx);
+                } else {
+                    this.pick_code_action(None, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &NextSnippetStop, _, cx| this.snippet_jump(true, cx)))
+            .on_action(cx.listener(|this, _: &PrevSnippetStop, _, cx| this.snippet_jump(false, cx)))
             .child(EditorElement::new(cx.entity()))
     }
 }

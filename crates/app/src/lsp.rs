@@ -17,12 +17,13 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use futures::channel::mpsc;
-use gpui::{App, Context, Entity, EntityId, SharedString, Subscription, Task};
+use gpui::{App, Context, Entity, EntityId, EventEmitter, SharedString, Subscription, Task};
 use me_lsp::registry::{self, Group};
 use me_lsp::types as lsp;
 use me_lsp::{Encoding, Event, Pulled, Server, Status};
 use me_text::Rope;
 
+use crate::editor::completion::{ActionItem, Completions};
 use crate::editor::diagnostics::{Diagnostic, Severity};
 use crate::editor::hover::HoverInfo;
 use crate::editor::{EditorEvent, EditorView};
@@ -87,6 +88,23 @@ pub type RenameSpot = Option<(Range<usize>, String)>;
 pub struct Rename {
     pub files: Vec<FileEdit>,
     pub encoding: Encoding,
+}
+
+/// Code actions the server offered for some chars.
+pub struct CodeActions {
+    pub actions: Vec<lsp::CodeActionOrCommand>,
+    pub encoding: Encoding,
+}
+
+pub enum LspEvent {
+    /// A server wants these edits made (often while running a command).
+    /// Answer with [`LanguageServers::respond_apply_edit`].
+    ApplyEdit {
+        group: &'static str,
+        id: serde_json::Value,
+        files: Vec<FileEdit>,
+        encoding: Encoding,
+    },
 }
 
 /// The problems known for a file: what the server last pushed, and what
@@ -171,6 +189,8 @@ pub struct LanguageServers {
     sync_task: Option<Task<()>>,
     _quit: Subscription,
 }
+
+impl EventEmitter<LspEvent> for LanguageServers {}
 
 impl LanguageServers {
     pub fn new(root: PathBuf, cx: &mut Context<Self>) -> Self {
@@ -444,6 +464,17 @@ impl LanguageServers {
                                 entry.pull_all = true;
                             }
                             this.schedule_pull(key, cx);
+                        }
+                        Event::ApplyEdit { id, edit } => {
+                            let encoding = this
+                                .live_server(key)
+                                .map_or(Encoding::Utf16, |s| s.encoding());
+                            cx.emit(LspEvent::ApplyEdit {
+                                group: key,
+                                id,
+                                files: file_edits(edit),
+                                encoding,
+                            });
                         }
                     }
                     cx.notify();
@@ -964,6 +995,201 @@ impl LanguageServers {
         }
     }
 
+    // ---------------------------------------------------------------------
+    // Completions and code actions
+    // ---------------------------------------------------------------------
+
+    /// The characters that ask `editor`'s server for completions (`.`,
+    /// `::`'s `:` …); `None` when it doesn't complete.
+    pub fn completion_triggers(&self, editor: &Entity<EditorView>) -> Option<Vec<char>> {
+        let (server, _) = self.doc_server(editor.entity_id())?;
+        if !server.supports("completionProvider") {
+            return None;
+        }
+        let triggers = server
+            .capability("/completionProvider/triggerCharacters")
+            .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok())
+            .unwrap_or_default();
+        Some(triggers.iter().filter_map(|t| t.chars().last()).collect())
+    }
+
+    /// What the server would complete at `pos`. `typed` is the trigger
+    /// character, when one was just typed.
+    pub fn completions(
+        &mut self,
+        editor: &Entity<EditorView>,
+        pos: usize,
+        typed: Option<char>,
+        incomplete: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<Task<anyhow::Result<Completions>>> {
+        let (server, at, _) = self.at(editor, pos, "completionProvider", cx)?;
+        let encoding = server.encoding();
+        let resolvable = server.supports_at("/completionProvider/resolveProvider");
+        let asked = at.position;
+        let context = lsp::CompletionContext {
+            trigger_kind: if incomplete {
+                lsp::CompletionTriggerKind::TRIGGER_FOR_INCOMPLETE_COMPLETIONS
+            } else if typed.is_some() {
+                lsp::CompletionTriggerKind::TRIGGER_CHARACTER
+            } else {
+                lsp::CompletionTriggerKind::INVOKED
+            },
+            trigger_character: typed.filter(|_| !incomplete).map(String::from),
+        };
+        let request = server.request::<lsp::request::Completion>(lsp::CompletionParams {
+            text_document_position: at,
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+            context: Some(context),
+        });
+        Some(cx.background_executor().spawn(async move {
+            let (items, incomplete) = match request.await? {
+                None => (Vec::new(), false),
+                Some(lsp::CompletionResponse::Array(items)) => (items, false),
+                Some(lsp::CompletionResponse::List(list)) => (list.items, list.is_incomplete),
+            };
+            Ok(Completions {
+                items,
+                incomplete,
+                encoding,
+                asked,
+                resolvable,
+            })
+        }))
+    }
+
+    /// A completion's documentation, details and imports, which servers
+    /// often leave out of the list. Its edits are for the text as it is
+    /// now (synced first).
+    pub fn resolve_completion(
+        &mut self,
+        editor: &Entity<EditorView>,
+        item: lsp::CompletionItem,
+        cx: &mut Context<Self>,
+    ) -> Option<Task<anyhow::Result<(lsp::CompletionItem, Encoding)>>> {
+        let id = editor.entity_id();
+        self.sync_doc(id, cx);
+        let (server, _) = self.doc_server(id)?;
+        let encoding = server.encoding();
+        let request = server.request::<lsp::request::ResolveCompletionItem>(item);
+        Some(
+            cx.background_executor()
+                .spawn(async move { Ok((request.await?, encoding)) }),
+        )
+    }
+
+    /// The fixes and refactorings the server offers for `range` (chars),
+    /// told about the problems there.
+    pub fn code_actions(
+        &mut self,
+        editor: &Entity<EditorView>,
+        range: Range<usize>,
+        cx: &mut Context<Self>,
+    ) -> Option<Task<anyhow::Result<CodeActions>>> {
+        let id = editor.entity_id();
+        self.sync_doc(id, cx);
+        let (server, target) = self.doc_server(id)?;
+        if !server.supports("codeActionProvider") {
+            return None;
+        }
+        let encoding = server.encoding();
+        let rope = editor.read(cx).state.doc.rope();
+        let range = lsp::Range::new(
+            me_lsp::position(rope, range.start, encoding),
+            me_lsp::position(rope, range.end, encoding),
+        );
+        let diagnostics = self
+            .diagnostics
+            .get(&target.canonical)
+            .map(|published| {
+                published
+                    .items()
+                    .filter(|d| d.range.start <= range.end && range.start <= d.range.end)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        let request = server.request::<lsp::request::CodeActionRequest>(lsp::CodeActionParams {
+            text_document: lsp::TextDocumentIdentifier { uri: target.uri },
+            range,
+            context: lsp::CodeActionContext {
+                diagnostics,
+                only: None,
+                trigger_kind: Some(lsp::CodeActionTriggerKind::INVOKED),
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        });
+        Some(cx.background_executor().spawn(async move {
+            let mut actions = request.await?.unwrap_or_default();
+            // Preferred fixes first, then other fixes, then the rest, in the
+            // server's order.
+            actions.sort_by_key(|a| match a {
+                lsp::CodeActionOrCommand::CodeAction(a) if a.is_preferred == Some(true) => 0,
+                lsp::CodeActionOrCommand::CodeAction(a)
+                    if a.kind
+                        .as_ref()
+                        .is_some_and(|k| k.as_str().split('.').next() == Some("quickfix")) =>
+                {
+                    1
+                }
+                _ => 2,
+            });
+            Ok(CodeActions { actions, encoding })
+        }))
+    }
+
+    /// The edit of a code action the server left out of the list.
+    pub fn resolve_code_action(
+        &self,
+        editor: &Entity<EditorView>,
+        action: lsp::CodeAction,
+        cx: &App,
+    ) -> Option<Task<anyhow::Result<lsp::CodeAction>>> {
+        let (server, _) = self.doc_server(editor.entity_id())?;
+        if !server.supports_at("/codeActionProvider/resolveProvider") {
+            return None;
+        }
+        let request = server.request::<lsp::request::CodeActionResolveRequest>(action);
+        Some(cx.background_executor().spawn(request))
+    }
+
+    /// Runs one of the server's commands; `None` when it has no such
+    /// command (it's meant for an editor extension we don't have).
+    pub fn execute_command(
+        &self,
+        editor: &Entity<EditorView>,
+        command: String,
+        arguments: Option<Vec<serde_json::Value>>,
+        cx: &App,
+    ) -> Option<Task<anyhow::Result<()>>> {
+        let (server, _) = self.doc_server(editor.entity_id())?;
+        let known = server
+            .capability("/executeCommandProvider/commands")
+            .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok())
+            .is_some_and(|commands| commands.contains(&command));
+        if !known {
+            return None;
+        }
+        let request = server.request::<lsp::request::ExecuteCommand>(lsp::ExecuteCommandParams {
+            command,
+            arguments: arguments.unwrap_or_default(),
+            work_done_progress_params: Default::default(),
+        });
+        Some(cx.background_executor().spawn(async move {
+            request.await?;
+            Ok(())
+        }))
+    }
+
+    /// Answers a server's [`LspEvent::ApplyEdit`].
+    pub fn respond_apply_edit(&self, group: &str, id: serde_json::Value, applied: bool) {
+        if let Some(server) = self.live_server(group) {
+            server.respond(id, serde_json::json!({ "applied": applied }));
+        }
+    }
+
     /// The server for `editor` if it has `provider`, with the position of
     /// `pos` and the text it's in (synced first).
     fn at(
@@ -1193,7 +1419,7 @@ fn hover_markdown(contents: lsp::HoverContents) -> String {
 
 /// A workspace edit's text edits, by file. Creating, renaming and deleting
 /// files isn't supported (and not announced), so servers don't send those.
-fn file_edits(edit: lsp::WorkspaceEdit) -> Vec<FileEdit> {
+pub fn file_edits(edit: lsp::WorkspaceEdit) -> Vec<FileEdit> {
     let mut files: Vec<FileEdit> = Vec::new();
     let mut add = |uri: &lsp::Uri, edits: Vec<lsp::TextEdit>| {
         let Some(path) = me_lsp::path_from_uri(uri) else {
@@ -1252,6 +1478,45 @@ pub fn char_edits(
             )
         })
         .collect()
+}
+
+/// How a code action shows in the list.
+pub fn action_item(action: &lsp::CodeActionOrCommand) -> ActionItem {
+    match action {
+        lsp::CodeActionOrCommand::Command(command) => ActionItem {
+            title: command.title.clone().into(),
+            kind: None,
+            preferred: false,
+            disabled: None,
+        },
+        lsp::CodeActionOrCommand::CodeAction(action) => ActionItem {
+            title: action.title.clone().into(),
+            kind: action
+                .kind
+                .as_ref()
+                .and_then(|k| action_kind_label(k.as_str()))
+                .map(SharedString::from),
+            preferred: action.is_preferred == Some(true),
+            disabled: action
+                .disabled
+                .as_ref()
+                .map(|d| SharedString::from(d.reason.clone())),
+        },
+    }
+}
+
+fn action_kind_label(kind: &str) -> Option<&'static str> {
+    let mut parts = kind.split('.');
+    Some(match (parts.next()?, parts.next()) {
+        ("quickfix", _) => "Fix",
+        ("refactor", Some("extract")) => "Extract",
+        ("refactor", Some("inline")) => "Inline",
+        ("refactor", Some("rewrite")) => "Rewrite",
+        ("refactor", _) => "Refactor",
+        ("source", Some("organizeImports")) => "Imports",
+        ("source", _) => "Source",
+        _ => return None,
+    })
 }
 
 fn definition_spots(response: Option<lsp::GotoDefinitionResponse>) -> Vec<Spot> {

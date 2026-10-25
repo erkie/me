@@ -23,6 +23,8 @@ pub struct Settings {
     /// `{"rust": {"enabled": false}}`.
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub language_servers: HashMap<String, LanguageServerSettings>,
+    /// Show completions while typing (Ctrl+Space shows them any time).
+    pub suggest_on_type: bool,
     /// Download new builds from GitHub and install them on restart.
     pub auto_update: bool,
     /// A GitHub token for update checks (optional; needed only if the
@@ -53,6 +55,7 @@ impl Default for Settings {
             font_size: DEFAULT_FONT_SIZE,
             word_wrap: false,
             language_servers: HashMap::new(),
+            suggest_on_type: true,
             auto_update: true,
             github_token: None,
         }

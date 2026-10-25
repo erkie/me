@@ -68,6 +68,15 @@ actions!(
         GoToLine,
         UseSelectionForFind,
         ShowHover,
+        ShowCompletions,
+        ShowCodeActions,
+        MenuUp,
+        MenuDown,
+        MenuPageUp,
+        MenuPageDown,
+        MenuConfirm,
+        NextSnippetStop,
+        PrevSnippetStop,
     ]
 );
 
@@ -307,6 +316,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("f8", NextProblem, workspace),
         KeyBinding::new("shift-f8", PreviousProblem, workspace),
         KeyBinding::new("secondary-i", ShowHover, editor),
+        KeyBinding::new("ctrl-space", ShowCompletions, editor),
+        KeyBinding::new("secondary-.", ShowCodeActions, editor),
         KeyBinding::new("ctrl-shift--", NavigateForward, workspace),
         // Ctrl+- is font size off the Mac.
         KeyBinding::new(
@@ -330,6 +341,21 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-=", IncreaseFontSize, None),
         KeyBinding::new("secondary--", DecreaseFontSize, None),
         KeyBinding::new("secondary-0", ResetFontSize, None),
+    ]);
+    // While a completion snippet is being filled in, then while a menu
+    // is open. Bound after the plain editor keys so these win; the menu
+    // keys win over the snippet's Tab.
+    let snippet = Some("Editor && in_snippet");
+    let menu = Some("Editor && showing_menu");
+    cx.bind_keys([
+        KeyBinding::new("tab", NextSnippetStop, snippet),
+        KeyBinding::new("shift-tab", PrevSnippetStop, snippet),
+        KeyBinding::new("up", MenuUp, menu),
+        KeyBinding::new("down", MenuDown, menu),
+        KeyBinding::new("pageup", MenuPageUp, menu),
+        KeyBinding::new("pagedown", MenuPageDown, menu),
+        KeyBinding::new("enter", MenuConfirm, menu),
+        KeyBinding::new("tab", MenuConfirm, menu),
     ]);
     // Painting on an image. Bound last: these win over the font size keys
     // and the editor's undo and save while a picture has focus.

@@ -70,6 +70,11 @@ fn commands(cx: &App) -> Vec<(String, Box<dyn Action>)> {
         ("Find References".into(), Box::new(FindReferences)),
         ("Rename Symbol…".into(), Box::new(RenameSymbol)),
         ("Show Hover".into(), Box::new(ShowHover)),
+        ("Show Completions".into(), Box::new(ShowCompletions)),
+        (
+            "Code Actions / Quick Fix…".into(),
+            Box::new(ShowCodeActions),
+        ),
         ("Show Problems".into(), Box::new(ShowProblems)),
         ("Go to Next Problem".into(), Box::new(NextProblem)),
         ("Go to Previous Problem".into(), Box::new(PreviousProblem)),

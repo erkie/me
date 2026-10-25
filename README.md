@@ -44,10 +44,13 @@ code. The plan and the reasoning behind the technology choice are in
   and a built-in tree-sitter symbol index otherwise, so it works in every
   language we highlight with nothing to install; `⌘R` jumps to a symbol in
   the file, `⇧⌘R` in the project, and `⌃-` / `⌃⇧-` go back and forward
-- With a language server: **errors and warnings** underlined as you type
+- With a language server: **completions** as you type (`⌃Space` any
+  time) with docs beside the list, snippets you `Tab` through, and imports
+  added for you; **code actions** and quick fixes (`⌘.`, or Quick Fix in a
+  problem's popover); **errors and warnings** underlined as you type
   (`F8` steps through them, `⇧⌘M` lists them all), **hover** for types and
   docs (rest the pointer on a word, or `⌘I`), and **rename** across files
-  with `F2`
+  with `F2`. Without one, the file's own words are offered as you type
 - Multiple selections: `⌘D`, `⌘L`, `⇧⌘L`, `⌃⌘G`, `⌃⇧↑/↓`, `⌥`-click,
   and **`⌥`-drag column selection**
 - Never loses work: closing a window or quitting keeps unsaved text, tabs
@@ -130,10 +133,12 @@ rbenv, asdf, mise, pyenv and nodenv shims:
 The status bar shows the server and what it's doing; click it to restart
 or stop it. Next to the cursor position it counts the folder's errors and
 warnings; click it for the list. Without a server (or while it's still
-starting) go to definition uses the built-in index, and `F2` edits every
-occurrence of the word in the file instead of renaming across files. To pick another server or turn one off,
-edit `settings.json` (`~/Library/Application Support/Me` on macOS,
-`~/.config/me` elsewhere):
+starting) go to definition uses the built-in index, completions come
+from the words in the file, and `F2` edits every occurrence of the word in
+the file instead of renaming across files. To pick another server or turn
+one off, edit `settings.json` (`~/Library/Application Support/Me` on
+macOS, `~/.config/me` elsewhere); `"suggest_on_type": false` keeps the
+completion list to `⌃Space`:
 
 ```json
 {

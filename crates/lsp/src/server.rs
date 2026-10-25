@@ -29,6 +29,12 @@ pub enum Event {
     Diagnostics(lsp::PublishDiagnosticsParams),
     /// Problems pulled earlier are out of date: pull them again.
     DiagnosticsRefresh,
+    /// The server wants an edit applied (often while running a command).
+    /// Answer with [`Server::respond`] and `{"applied": bool}`.
+    ApplyEdit {
+        id: Value,
+        edit: lsp::WorkspaceEdit,
+    },
 }
 
 /// The answer to a `textDocument/diagnostic` pull.
@@ -301,6 +307,17 @@ impl Server {
         }
     }
 
+    /// A capability's value by JSON pointer
+    /// (`/completionProvider/triggerCharacters`).
+    pub fn capability(&self, pointer: &str) -> Option<Value> {
+        self.capabilities.lock().unwrap().pointer(pointer).cloned()
+    }
+
+    /// Answers a request the server made (see [`Event::ApplyEdit`]).
+    pub fn respond(&self, id: Value, result: Value) {
+        self.send(json!({ "jsonrpc": "2.0", "id": id, "result": result }));
+    }
+
     /// Whether a nested capability is on (`/renameProvider/prepareProvider`).
     pub fn supports_at(&self, pointer: &str) -> bool {
         match self.capabilities.lock().unwrap().pointer(pointer) {
@@ -342,6 +359,8 @@ impl Server {
                     "workspaceFolders": true,
                     "workspaceEdit": { "documentChanges": true },
                     "diagnostics": { "refreshSupport": true },
+                    "applyEdit": true,
+                    "executeCommand": {},
                 },
                 "textDocument": {
                     "synchronization": { "didSave": true },
@@ -352,6 +371,35 @@ impl Server {
                         "tagSupport": { "valueSet": [1, 2] },
                     },
                     "diagnostic": { "dynamicRegistration": false },
+                    "completion": {
+                        "contextSupport": true,
+                        "completionItem": {
+                            "snippetSupport": true,
+                            "insertReplaceSupport": true,
+                            "labelDetailsSupport": true,
+                            "deprecatedSupport": true,
+                            "tagSupport": { "valueSet": [1] },
+                            "documentationFormat": ["markdown", "plaintext"],
+                            // With additionalTextEdits, rust-analyzer offers
+                            // items from modules not imported yet (and adds
+                            // the import when one is resolved).
+                            "resolveSupport": { "properties": [
+                                "documentation", "detail", "additionalTextEdits",
+                            ] },
+                        },
+                        "completionItemKind": { "valueSet": (1..=25).collect::<Vec<u32>>() },
+                    },
+                    "codeAction": {
+                        "codeActionLiteralSupport": { "codeActionKind": { "valueSet": [
+                            "", "quickfix", "refactor", "refactor.extract", "refactor.inline",
+                            "refactor.rewrite", "source", "source.organizeImports",
+                            "source.fixAll",
+                        ] } },
+                        "isPreferredSupport": true,
+                        "disabledSupport": true,
+                        "dataSupport": true,
+                        "resolveSupport": { "properties": ["edit"] },
+                    },
                     "definition": { "linkSupport": true },
                     "declaration": { "linkSupport": true },
                     "typeDefinition": { "linkSupport": true },
@@ -611,7 +659,20 @@ fn handle_message(
                         .map_or(0, Vec::len);
                     Ok(Value::Array(vec![Value::Null; items]))
                 }
-                "workspace/applyEdit" => Ok(json!({ "applied": false })),
+                "workspace/applyEdit" => {
+                    match params
+                        .and_then(|p| p.get("edit"))
+                        .cloned()
+                        .and_then(|e| serde_json::from_value(e).ok())
+                    {
+                        // The app answers once it has applied it.
+                        Some(edit) => {
+                            let _ = events.unbounded_send(Event::ApplyEdit { id, edit });
+                            return;
+                        }
+                        None => Ok(json!({ "applied": false })),
+                    }
+                }
                 "workspace/diagnostic/refresh" => {
                     let _ = events.unbounded_send(Event::DiagnosticsRefresh);
                     Ok(Value::Null)

@@ -31,11 +31,15 @@ pub struct Diagnostic {
 pub fn map_through(diagnostics: &mut [Diagnostic], edits: &[ByteEdit]) {
     for edit in edits {
         for d in diagnostics.iter_mut() {
-            let start = map(d.range.start, edit, false);
-            let end = map(d.range.end, edit, true).max(start);
-            d.range = start..end;
+            d.range = map_range(d.range.clone(), edit);
         }
     }
+}
+
+/// A byte range moved through one edit, the same way.
+pub fn map_range(range: Range<usize>, edit: &ByteEdit) -> Range<usize> {
+    let start = map(range.start, edit, false);
+    start..map(range.end, edit, true).max(start)
 }
 
 fn map(pos: usize, edit: &ByteEdit, is_end: bool) -> usize {

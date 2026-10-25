@@ -17,6 +17,7 @@ use gpui::{
 
 use crate::actions::*;
 use crate::app_state;
+use crate::editor::completion::{self, CompletionTrigger};
 use crate::editor::diagnostics::Severity;
 use crate::editor::{EditorEvent, EditorView};
 use crate::file_tree::{FileTree, FileTreeEvent};
@@ -24,7 +25,7 @@ use crate::find_bar::{FindBar, FindBarEvent};
 use crate::finder::{FinderEvent, FinderView};
 use crate::goto_line::{GoToLineEvent, GoToLinePrompt};
 use crate::image_preview::{ImageEvent, ImagePreview, is_image, is_svg};
-use crate::lsp::{FileEdit, LanguageServers, Query, Target};
+use crate::lsp::{CodeActions, FileEdit, LanguageServers, LspEvent, Query, Target};
 use crate::markdown::{MarkdownEvent, MarkdownPreview, is_markdown};
 use crate::palette::{CommandPalette, PaletteEvent};
 use crate::picker::{Badge, Picker, PickerEvent, PickerItem};
@@ -211,6 +212,10 @@ pub struct Workspace {
     lsp: Option<Entity<LanguageServers>>,
     /// A go to definition waiting for the index to finish.
     pending_definition: Option<Task<()>>,
+    /// Completions being asked for: the editor and where its word starts.
+    completion_task: Option<(gpui::EntityId, usize, Task<()>)>,
+    /// The code actions list being shown.
+    code_actions: Option<ShownActions>,
     picker: Entity<Picker>,
     picker_open: bool,
     picker_return: Option<FocusHandle>,
@@ -227,6 +232,14 @@ pub struct Workspace {
     flash: Option<SharedString>,
     flash_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// Code actions in an editor's list, until one is picked.
+struct ShownActions {
+    editor: gpui::WeakEntity<EditorView>,
+    /// The list's id in the editor.
+    id: u64,
+    actions: CodeActions,
 }
 
 /// A rename being typed.
@@ -320,6 +333,8 @@ impl Workspace {
             symbol_index: None,
             lsp: None,
             pending_definition: None,
+            completion_task: None,
+            code_actions: None,
             picker,
             picker_open: false,
             picker_return: None,
@@ -356,6 +371,28 @@ impl Workspace {
         let lsp = cx.new(|cx| LanguageServers::new(root.clone(), cx));
         self._subscriptions
             .push(cx.observe(&lsp, |_, _, cx| cx.notify()));
+        self._subscriptions.push(cx.subscribe_in(
+            &lsp,
+            window,
+            |this, lsp, event: &LspEvent, window, cx| match event {
+                LspEvent::ApplyEdit {
+                    group,
+                    id,
+                    files,
+                    encoding,
+                } => {
+                    let files = files
+                        .iter()
+                        .map(|f| FileEdit {
+                            path: f.path.clone(),
+                            edits: f.edits.clone(),
+                        })
+                        .collect();
+                    this.apply_file_edits(files, *encoding, false, window, cx);
+                    lsp.read(cx).respond_apply_edit(group, id.clone(), true);
+                }
+            },
+        ));
         let editors: Vec<Entity<EditorView>> = self.tabs.iter().map(|t| t.editor.clone()).collect();
         for editor in editors {
             lsp.update(cx, |lsp, cx| lsp.track(&editor, cx));
@@ -1087,6 +1124,339 @@ impl Workspace {
     }
 
     // ---------------------------------------------------------------------
+    // Completions and code actions
+    // ---------------------------------------------------------------------
+
+    /// Asks the language server what could go at `pos`, or, without one,
+    /// offers the buffer's words.
+    fn request_completions(
+        &mut self,
+        editor: Entity<EditorView>,
+        trigger: CompletionTrigger,
+        pos: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let triggers = self
+            .lsp
+            .as_ref()
+            .and_then(|lsp| lsp.read(cx).completion_triggers(&editor));
+        let (word_start, language, open_start) = {
+            let editor = editor.read(cx);
+            (
+                editor.word_start(pos),
+                editor.language_name(),
+                editor.completion.as_ref().map(|m| m.start),
+            )
+        };
+        let pending = self
+            .completion_task
+            .as_ref()
+            .filter(|(id, _, _)| *id == editor.entity_id())
+            .map(|(_, start, _)| *start);
+        let (start, typed, incomplete) = match trigger {
+            CompletionTrigger::Manual => (word_start, None, false),
+            CompletionTrigger::Incomplete => {
+                let start = open_start.unwrap_or(word_start);
+                if pending == Some(start) {
+                    // Asked again when that answer comes.
+                    return;
+                }
+                (start, None, true)
+            }
+            CompletionTrigger::Typed(ch) if triggers.as_ref().is_some_and(|t| t.contains(&ch)) => {
+                (pos, Some(ch), false)
+            }
+            CompletionTrigger::Typed(ch) => {
+                let word = editor.read(cx).state.doc.text(word_start..pos);
+                let code = language.is_some_and(|l| !matches!(l, "Markdown" | "Plain Text"));
+                if !completion::is_word_char(ch)
+                    || word.starts_with(|c: char| c.is_ascii_digit())
+                    || !crate::settings::get(cx).suggest_on_type
+                {
+                    if pending.is_some() {
+                        self.completion_task = None;
+                    }
+                    return;
+                }
+                if pending == Some(word_start) {
+                    // The answer on its way is filtered by what's typed.
+                    return;
+                }
+                if triggers.is_none() {
+                    // No server: the buffer's words, in code, once a word
+                    // is under way.
+                    if code && word.chars().count() >= 3 {
+                        editor.update(cx, |editor, cx| {
+                            let words = editor.buffer_completions(pos);
+                            editor.show_completions(word_start, words, cx);
+                        });
+                    }
+                    return;
+                }
+                (word_start, None, false)
+            }
+        };
+        let manual = trigger == CompletionTrigger::Manual;
+        let request = self.lsp.clone().and_then(|lsp| {
+            lsp.update(cx, |lsp, cx| {
+                lsp.completions(&editor, pos, typed, incomplete, cx)
+            })
+        });
+        let Some(request) = request else {
+            if manual {
+                editor.update(cx, |editor, cx| {
+                    let words = editor.buffer_completions(pos);
+                    editor.show_completions(word_start, words, cx);
+                });
+            }
+            return;
+        };
+        let id = editor.entity_id();
+        let task = cx.spawn(async move |this, cx| {
+            let result = request.await;
+            this.update(cx, |this, cx| {
+                this.completion_task = None;
+                // Where the cursor went since, if it's still in the word.
+                let moved = {
+                    let editor = editor.read(cx);
+                    editor
+                        .cursor()
+                        .filter(|now| *now != pos && editor.typed_since(start).is_some())
+                };
+                let again = match result {
+                    Ok(mut completions) => {
+                        if completions.items.is_empty() && manual {
+                            completions = editor.read(cx).buffer_completions(pos);
+                        }
+                        let incomplete = completions.incomplete;
+                        editor.update(cx, |editor, cx| {
+                            editor.show_completions(start, completions, cx)
+                        });
+                        // A partial list, and the word grew while it was
+                        // on its way: ask for the rest.
+                        moved.filter(|_| incomplete)
+                    }
+                    // Servers drop answers the typing outran: ask again.
+                    Err(_) => moved,
+                };
+                if let Some(now) = again {
+                    this.request_completions(editor, CompletionTrigger::Incomplete, now, cx);
+                }
+            })
+            .ok();
+        });
+        self.completion_task = Some((id, start, task));
+    }
+
+    fn resolve_completion(
+        &mut self,
+        editor: Entity<EditorView>,
+        id: u64,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(lsp) = self.lsp.clone() else { return };
+        let Some(item) = editor.read(cx).completion_item(id, index) else {
+            return;
+        };
+        let Some(request) = lsp.update(cx, |lsp, cx| lsp.resolve_completion(&editor, item, cx))
+        else {
+            return;
+        };
+        cx.spawn(async move |_, cx| {
+            if let Ok((item, _)) = request.await {
+                editor.update(cx, |editor, cx| editor.set_resolved(id, index, item, cx));
+            }
+        })
+        .detach();
+    }
+
+    /// Adds what an accepted completion needs elsewhere (its import), once
+    /// the server says what that is.
+    fn resolve_accepted(
+        &mut self,
+        editor: Entity<EditorView>,
+        item: me_lsp::types::CompletionItem,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(lsp) = self.lsp.clone() else { return };
+        let (revision, cursor) = {
+            let editor = editor.read(cx);
+            (
+                editor.state.doc.revision(),
+                editor.state.selections().primary().head,
+            )
+        };
+        let Some(request) = lsp.update(cx, |lsp, cx| lsp.resolve_completion(&editor, item, cx))
+        else {
+            return;
+        };
+        cx.spawn(async move |_, cx| {
+            let Ok((item, encoding)) = request.await else {
+                return;
+            };
+            let edits = item.additional_text_edits.unwrap_or_default();
+            editor.update(cx, |editor, cx| {
+                let edits = crate::lsp::char_edits(editor.state.doc.rope(), &edits, encoding);
+                // Typing since then went in at the cursor: edits before it
+                // still fit.
+                let fits = editor.state.doc.revision() == revision
+                    || edits.iter().all(|(range, _)| range.end <= cursor);
+                if fits {
+                    editor.apply_edits(edits, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Cmd+.: the server's fixes and refactorings for `range`, in a list
+    /// at its start.
+    fn request_code_actions(
+        &mut self,
+        editor: Entity<EditorView>,
+        range: std::ops::Range<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        let request = self
+            .lsp
+            .clone()
+            .and_then(|lsp| lsp.update(cx, |lsp, cx| lsp.code_actions(&editor, range.clone(), cx)));
+        let Some(request) = request else {
+            self.flash_message("No code actions: no language server".to_string(), cx);
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let result = request.await;
+            this.update(cx, |this, cx| match result {
+                Ok(actions) if actions.actions.is_empty() => {
+                    this.flash_message("No code actions here".to_string(), cx)
+                }
+                Ok(actions) => {
+                    let items = actions
+                        .actions
+                        .iter()
+                        .map(crate::lsp::action_item)
+                        .collect();
+                    let id = editor.update(cx, |editor, cx| {
+                        editor.show_code_actions(range.start, items, cx)
+                    });
+                    this.code_actions = Some(ShownActions {
+                        editor: editor.downgrade(),
+                        id,
+                        actions,
+                    });
+                }
+                Err(err) => this.flash_message(format!("Code actions failed: {err}"), cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Makes a picked code action's edits (asking the server for them if
+    /// it left them out) and runs its command.
+    fn run_code_action(
+        &mut self,
+        editor: Entity<EditorView>,
+        id: u64,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(shown) = self
+            .code_actions
+            .take()
+            .filter(|s| s.id == id && s.editor == editor.downgrade())
+        else {
+            return;
+        };
+        let encoding = shown.actions.encoding;
+        let Some(action) = shown.actions.actions.into_iter().nth(index) else {
+            return;
+        };
+        let action = match action {
+            me_lsp::types::CodeActionOrCommand::Command(command) => {
+                self.run_command(editor, command.command, command.arguments, cx);
+                return;
+            }
+            me_lsp::types::CodeActionOrCommand::CodeAction(action) => action,
+        };
+        let resolve = (action.edit.is_none() && action.data.is_some())
+            .then(|| {
+                self.lsp
+                    .as_ref()?
+                    .read(cx)
+                    .resolve_code_action(&editor, action.clone(), cx)
+            })
+            .flatten();
+        let Some(resolve) = resolve else {
+            self.apply_code_action(editor, action, encoding, window, cx);
+            return;
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            let result = resolve.await;
+            this.update_in(cx, |this, window, cx| match result {
+                Ok(resolved) => this.apply_code_action(editor, resolved, encoding, window, cx),
+                Err(err) => this.flash_message(format!("Code action failed: {err}"), cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn apply_code_action(
+        &mut self,
+        editor: Entity<EditorView>,
+        action: me_lsp::types::CodeAction,
+        encoding: me_lsp::Encoding,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(edit) = action.edit {
+            let files = crate::lsp::file_edits(edit);
+            self.apply_file_edits(files, encoding, false, window, cx);
+        }
+        if let Some(command) = action.command {
+            self.run_command(editor, command.command, command.arguments, cx);
+        }
+    }
+
+    /// A command from a completion or code action: the server runs its
+    /// own (and may send edits back); ours are just "show completions".
+    fn run_command(
+        &mut self,
+        editor: Entity<EditorView>,
+        command: String,
+        arguments: Option<Vec<serde_json::Value>>,
+        cx: &mut Context<Self>,
+    ) {
+        if command == "editor.action.triggerSuggest" {
+            let pos = editor.read(cx).cursor();
+            if let Some(pos) = pos {
+                self.request_completions(editor, CompletionTrigger::Manual, pos, cx);
+            }
+            return;
+        }
+        let Some(lsp) = self.lsp.clone() else { return };
+        let Some(request) = lsp
+            .read(cx)
+            .execute_command(&editor, command.clone(), arguments, cx)
+        else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            if let Err(err) = request.await {
+                this.update(cx, |this, cx| {
+                    this.flash_message(format!("{command} failed: {err}"), cx)
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
+    // ---------------------------------------------------------------------
     // Rename
     // ---------------------------------------------------------------------
 
@@ -1207,7 +1577,8 @@ impl Workspace {
                     this.flash_message(format!("Nothing to rename for {old}"), cx)
                 }
                 Ok(rename) => {
-                    let count = this.apply_file_edits(rename.files, rename.encoding, window, cx);
+                    let count =
+                        this.apply_file_edits(rename.files, rename.encoding, true, window, cx);
                     let files = if count == 1 { "file" } else { "files" };
                     this.flash_message(format!("Renamed {old} to {new} in {count} {files}"), cx);
                 }
@@ -1218,13 +1589,15 @@ impl Workspace {
         .detach();
     }
 
-    /// Applies a rename: open files get one undoable edit (and are saved if
-    /// they had no other changes, like VS Code), closed ones are edited on
-    /// disk. Returns how many files changed.
+    /// Applies a server's edits: open files get one undoable edit each (and,
+    /// with `save_clean`, are saved if they had no other changes, like VS
+    /// Code after a rename), closed ones are edited on disk. Returns how
+    /// many files changed.
     fn apply_file_edits(
         &mut self,
         files: Vec<FileEdit>,
         encoding: me_lsp::Encoding,
+        save_clean: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> usize {
@@ -1243,7 +1616,7 @@ impl Workspace {
                         let edits =
                             crate::lsp::char_edits(editor.state.doc.rope(), &file.edits, encoding);
                         editor.apply_edits(edits, cx);
-                        if was_clean {
+                        if was_clean && save_clean {
                             editor.save(window, cx).detach();
                         }
                     });
@@ -1795,6 +2168,24 @@ impl Workspace {
                     this.go_to_definition(editor.clone(), *pos, window, cx)
                 }
                 EditorEvent::Hover { pos, id } => this.request_hover(editor.clone(), *pos, *id, cx),
+                EditorEvent::Completions { trigger, pos } => {
+                    this.request_completions(editor.clone(), *trigger, *pos, cx)
+                }
+                EditorEvent::ResolveCompletion { id, index } => {
+                    this.resolve_completion(editor.clone(), *id, *index, cx)
+                }
+                EditorEvent::CodeActions { range } => {
+                    this.request_code_actions(editor.clone(), range.clone(), cx)
+                }
+                EditorEvent::CodeActionPicked { id, index } => {
+                    this.run_code_action(editor.clone(), *id, *index, window, cx)
+                }
+                EditorEvent::ResolveAccepted { item } => {
+                    this.resolve_accepted(editor.clone(), (**item).clone(), cx)
+                }
+                EditorEvent::RunCommand { command, arguments } => {
+                    this.run_command(editor.clone(), command.clone(), arguments.clone(), cx)
+                }
                 EditorEvent::OpenFile { path, line } => {
                     let target = Location {
                         path: path.clone(),

@@ -68,7 +68,7 @@ pub fn severity_badge(severity: Severity, palette: &Palette) -> Badge {
     }
 }
 
-fn hover_text_style(palette: &Palette) -> TextViewStyle {
+pub(crate) fn hover_text_style(palette: &Palette) -> TextViewStyle {
     TextViewStyle::default()
         .with_foreground(palette.text)
         .with_muted_foreground(palette.text_secondary)
@@ -168,6 +168,41 @@ pub fn popover(
             })
     });
     let has_diagnostics = !hover.diagnostics.is_empty();
+    // The fixes the server has for the problems shown.
+    let fix_view = view.downgrade();
+    let range = hover.range.clone();
+    let quick_fix = div()
+        .id("quick-fix")
+        .font_family(theme::fonts(cx).ui.clone())
+        .flex()
+        .gap(px(6.))
+        .text_size(px(12.))
+        .child(
+            div()
+                .text_color(palette.accent)
+                .cursor_pointer()
+                .hover(|s| s.underline())
+                .child("Quick Fix…"),
+        )
+        .child(
+            div()
+                .text_color(palette.text_tertiary)
+                .child(if cfg!(target_os = "macos") {
+                    "⌘."
+                } else {
+                    "Ctrl+."
+                }),
+        )
+        .on_mouse_down(gpui::MouseButton::Left, move |_, _, cx| {
+            cx.stop_propagation();
+            let range = range.clone();
+            fix_view
+                .update(cx, |view, cx| {
+                    view.hide_hover(cx);
+                    cx.emit(super::EditorEvent::CodeActions { range });
+                })
+                .ok();
+        });
     div()
         .id(("hover", hover.id as usize))
         .occlude()
@@ -199,7 +234,8 @@ pub fn popover(
                     .gap(px(6.))
                     .font_family(mono.clone())
                     .text_size(px(12.5))
-                    .children(diagnostics),
+                    .children(diagnostics)
+                    .child(quick_fix),
             )
         })
         .when_some(info, |el, info| {

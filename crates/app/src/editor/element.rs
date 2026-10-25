@@ -21,7 +21,7 @@ use me_text::wrap::{row_of, row_range, wrap_line};
 use me_text::{Document, EditorState};
 
 use super::diagnostics::Severity;
-use super::{Autoscroll, EditorView, hover};
+use super::{Autoscroll, EditorView, completion, hover};
 use crate::settings;
 use crate::theme::{self, Palette};
 
@@ -881,37 +881,95 @@ impl Element for EditorElement {
             bounds.bottom_right(),
         );
 
-        // The hover popover, above the word if there's room, else below.
-        let popover = view
-            .hover
-            .as_ref()
-            .filter(|h| h.is_visible())
-            .and_then(|hover| {
-                let p = snapshot.point_for_pos(hover.range.start, state)?;
-                let above = p.y - bounds.top();
+        // The completion list under the word being typed (its text lined
+        // up with the word), or above when there's no room; else the code
+        // actions list; else the hover popover.
+        let font_size = settings::get(cx).font_size;
+        let menu = if let Some(menu) = view.completion.as_ref().filter(|m| !m.matches.is_empty()) {
+            snapshot.point_for_pos(menu.start, state).map(|p| {
+                let rows = menu.matches.len().min(completion::VISIBLE_ROWS);
+                let height = px(rows as f32 * completion::row_height(font_size) + 10.);
+                let x = p.x - px(completion::TEXT_INSET);
                 let below = bounds.bottom() - (p.y + line_height);
-                let (corner, position, room) = if above >= px(160.) || above >= below {
-                    (Anchor::BottomLeft, point(p.x, p.y - px(2.)), above)
+                let above = p.y - bounds.top();
+                let (corner, position) = if below >= height + px(8.) || below >= above {
+                    (Anchor::TopLeft, point(x, p.y + line_height + px(2.)))
                 } else {
+                    (Anchor::BottomLeft, point(x, p.y - px(2.)))
+                };
+                (
+                    corner,
+                    position,
+                    completion::completion_popover(&self.view, menu, cx),
+                )
+            })
+        } else if let Some(menu) = view.actions_menu.as_ref() {
+            snapshot.point_for_pos(menu.anchor, state).map(|p| {
+                let below = bounds.bottom() - (p.y + line_height);
+                let above = p.y - bounds.top();
+                let (corner, position, room) = if below >= px(200.) || below >= above {
                     (
                         Anchor::TopLeft,
                         point(p.x, p.y + line_height + px(2.)),
                         below,
                     )
+                } else {
+                    (Anchor::BottomLeft, point(p.x, p.y - px(2.)), above)
                 };
-                let max_height = (room - px(8.)).clamp(px(60.), px(hover::MAX_HEIGHT));
-                Some(
-                    deferred(
-                        anchored()
-                            .anchor(corner)
-                            .position(position)
-                            .snap_to_window_with_margin(px(8.))
-                            .child(hover::popover(&self.view, hover, max_height, cx)),
-                    )
-                    .with_priority(1)
-                    .into_any_element(),
+                let max_height = (room - px(8.)).clamp(px(60.), px(400.));
+                (
+                    corner,
+                    position,
+                    completion::actions_popover(&self.view, menu, max_height, cx),
                 )
-            });
+            })
+        } else {
+            None
+        };
+        let menu = menu.map(|(corner, position, element)| {
+            deferred(
+                anchored()
+                    .anchor(corner)
+                    .position(position)
+                    .snap_to_window_with_margin(px(8.))
+                    .child(element),
+            )
+            .with_priority(1)
+            .into_any_element()
+        });
+
+        // The hover popover, above the word if there's room, else below.
+        let popover = menu.or_else(|| {
+            view.hover
+                .as_ref()
+                .filter(|h| h.is_visible())
+                .and_then(|hover| {
+                    let p = snapshot.point_for_pos(hover.range.start, state)?;
+                    let above = p.y - bounds.top();
+                    let below = bounds.bottom() - (p.y + line_height);
+                    let (corner, position, room) = if above >= px(160.) || above >= below {
+                        (Anchor::BottomLeft, point(p.x, p.y - px(2.)), above)
+                    } else {
+                        (
+                            Anchor::TopLeft,
+                            point(p.x, p.y + line_height + px(2.)),
+                            below,
+                        )
+                    };
+                    let max_height = (room - px(8.)).clamp(px(60.), px(hover::MAX_HEIGHT));
+                    Some(
+                        deferred(
+                            anchored()
+                                .anchor(corner)
+                                .position(position)
+                                .snap_to_window_with_margin(px(8.))
+                                .child(hover::popover(&self.view, hover, max_height, cx)),
+                        )
+                        .with_priority(1)
+                        .into_any_element(),
+                    )
+                })
+        });
         let popover = popover.map(|mut popover| {
             popover.prepaint_as_root(
                 point(px(0.), px(0.)),

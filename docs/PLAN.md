@@ -226,6 +226,9 @@ conflict. Phase 3 makes it user-configurable in `keymap.json`.
 | Switch to tab N | `Cmd+1`…`Cmd+9` |
 | Previous / next tab | `Cmd+Shift+[` / `Cmd+Shift+]`, `Ctrl+Tab` |
 | Go to line | `Ctrl+G` |
+| Show completions | `Ctrl+Space` (they also show as you type) |
+| Next / previous snippet field | `Tab` / `Shift+Tab` |
+| Code actions / quick fix | `Cmd+.` |
 | Undo / redo | `Cmd+Z` / `Cmd+Shift+Z` |
 | Duplicate line / move line | `Cmd+Shift+D` / `Ctrl+Cmd+↑/↓` |
 | Indent / outdent | `Tab` / `Shift+Tab` (with selection), `Cmd+]` / `Cmd+[` |
@@ -432,6 +435,27 @@ their whole job, and they are what VS Code and Zed run too. Two tiers:
    when it won't rename something (Ruby LSP renames only constants), F2
    puts a cursor on each occurrence in the file. `file://` links in hovers
    open in the editor.
+4. **Completions and code actions** (done). Typing a word, or one of the
+   server's trigger characters, asks `textDocument/completion` (one
+   request at a time; the answer is filtered by what was typed since,
+   with nucleo and the first letter starting a word, then the server's
+   `sortText`); partial lists are asked again as the word grows, and
+   answers a busy server cancelled are asked again. The list shows kind
+   badges, `labelDetails`, and the selected item's docs beside it (from
+   `completionItem/resolve` after 60 ms). Accepting applies `textEdit`
+   (insert or replace range, moved to the word as it is now), snippets
+   (tab stops, placeholders, choices and mirrors; Tab / Shift+Tab step
+   through them) and `additionalTextEdits` as one undo step; when the
+   item wasn't resolved yet, it is resolved after accepting and its
+   import is added then (rust-analyzer only offers not-yet-imported items
+   to clients that can do this). Without a server, the file's words are
+   offered in code (after three letters) and on Ctrl+Space in any file.
+   Cmd+. (or Quick Fix in a problem's popover, or the context menu) asks
+   `textDocument/codeAction` with the problems in the range; preferred
+   fixes come first, disabled ones say why. Picking one resolves it if
+   it has no edit yet (`codeAction/resolve`), applies its workspace edit
+   (open files stay unsaved) and runs its command; `workspace/applyEdit`
+   from the server is applied and answered.
 
 Language servers can use a lot of memory (rust-analyzer: gigabytes), so
 they only run while a window has files of their language open and stop
@@ -445,9 +469,9 @@ when idle; the editor's own footprint doesn't change.
 * Minimal git awareness in the tree (modified/untracked dots). No git UI.
 * Distribution: Developer ID signing, notarization, Homebrew cask.
   Auto-update is done: CI publishes each master build as the GitHub release
-  `build-<n>`; the app checks `releases/latest` (with the GitHub CLI's
-  token, the repository being private), downloads and verifies the zip, and
-  swaps the bundle in on quit or restart.
+  `build-<n>`; the app checks `releases/latest` (with a token if one is
+  set), downloads and verifies the zip, and swaps the bundle in on quit or
+  restart.
 * Accessibility pass (VoiceOver labels for the tree, tabs, and editor lines).
 
 ### Phase 4: Linux and Windows

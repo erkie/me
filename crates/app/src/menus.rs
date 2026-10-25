@@ -142,6 +142,9 @@ fn set_menus(cx: &mut App) {
             MenuItem::action("Move Line Down", MoveLineDown),
             MenuItem::action("Indent", IndentLines),
             MenuItem::action("Outdent", OutdentLines),
+            MenuItem::separator(),
+            MenuItem::action("Show Completions", ShowCompletions),
+            MenuItem::action("Code Actions…", ShowCodeActions),
         ]),
         Menu::new("Selection").items([
             MenuItem::action("Expand Selection to Line", SelectLine),
