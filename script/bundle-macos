@@ -51,6 +51,25 @@ cp "$out/me" "$app/Contents/Resources/bin/me"
 sed -e "s/@VERSION@/$version/" -e "s/@BUILD@/$build/" packaging/macos/Info.plist > "$app/Contents/Info.plist"
 script/make-icns assets/logo/app-icon-1024.png "$app/Contents/Resources/AppIcon.icns"
 
+# macOS 26 takes the app icon from Assets.car, named by CFBundleIconName,
+# and switches it between light, dark, clear and tinted; older macOS uses
+# AppIcon.icns. Compiling the car needs macOS 26 and Xcode 26, so CI does it
+# on a macOS 26 runner and passes it in ME_APP_ICON_CAR; elsewhere it's
+# compiled here, and left out (with a warning) where it can't be.
+car=${ME_APP_ICON_CAR:-}
+if [ -z "$car" ]; then
+  icon_out=$(mktemp -d)
+  if script/compile-app-icon "$icon_out"; then
+    car=$icon_out/Assets.car
+  fi
+fi
+if [ -n "$car" ]; then
+  cp "$car" "$app/Contents/Resources/Assets.car"
+  /usr/libexec/PlistBuddy -c "Add :CFBundleIconName string AppIcon" "$app/Contents/Info.plist"
+else
+  echo "warning: no macOS 26 app icon, so no dark icon; the app has AppIcon.icns only" >&2
+fi
+
 codesign --force --options runtime --sign "${CODESIGN_IDENTITY:--}" "$app/Contents/Resources/bin/me"
 codesign --force --options runtime --sign "${CODESIGN_IDENTITY:--}" "$app"
 echo "Built $app ($version, build $build)"

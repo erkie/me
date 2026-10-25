@@ -35,23 +35,46 @@ jobs:
       - run: cargo build --workspace --locked
       - run: cargo test --workspace --locked
 
+  # The macOS 26 app icon (light, dark, clear and tinted). Xcode 26 only
+  # compiles Icon Composer files on macOS 26, so it's done here and the Mac
+  # builds below put it in the app.
+  app-icon:
+    name: App icon (macOS 26)
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - run: script/compile-app-icon dist/app-icon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-icon
+          retention-days: 1
+          path: dist/app-icon/Assets.car
+
   macos:
     name: macOS (test + Me.app)
+    needs: app-icon
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
+      - uses: actions/download-artifact@v4
+        with:
+          name: app-icon
+          path: dist/app-icon
       # Checks that the app still bundles; the release job publishes it.
       - run: script/bundle-macos
+        env:
+          ME_APP_ICON_CAR: dist/app-icon/Assets.car
+      - run: test -s dist/Me.app/Contents/Resources/Assets.car
 
   # Every push to master that passes the tests becomes a build: a universal
   # Me.app uploaded as an artifact and published as the GitHub release
   # build-<n> (n = commit count), which the app updates itself from.
   release:
     name: Release (Me.app, universal)
-    needs: [linux, macos]
+    needs: [linux, macos, app-icon]
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     runs-on: macos-15
     permissions:
@@ -66,7 +89,14 @@ jobs:
         with:
           targets: aarch64-apple-darwin, x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v4
+        with:
+          name: app-icon
+          path: dist/app-icon
       - run: script/bundle-macos --universal
+        env:
+          ME_APP_ICON_CAR: dist/app-icon/Assets.car
+      - run: test -s dist/Me.app/Contents/Resources/Assets.car
       - name: Package
         id: package
         run: |

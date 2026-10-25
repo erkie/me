@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# compile-app-icon <out dir>
+#
+# Compiles assets/logo/AppIcon.icon, the macOS 26 app icon (light, dark,
+# clear and tinted), into <out dir>/Assets.car with Xcode 26's actool.
+# actool only renders Icon Composer files on macOS 26, and some Xcode
+# releases crash on them (26.5 does), so this tries the selected Xcode and
+# then every other Xcode 26 installed, newest first.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+out=${1:?usage: script/compile-app-icon <out dir>}
+mkdir -p "$out"
+
+actool_major() {
+  { DEVELOPER_DIR=$1 xcrun actool --version 2>/dev/null || true; } |
+    sed -n '/short-bundle-version/{n;s/.*<string>\([0-9]*\).*/\1/p;}'
+}
+
+candidates() {
+  xcode-select -p 2>/dev/null || true
+  for app in /Applications/Xcode*.app; do
+    [ -d "$app" ] && [ ! -L "$app" ] || continue
+    version=$(basename "$app" .app)
+    version=${version#Xcode}
+    echo "${version#_} $app/Contents/Developer"
+  done | sort -rV | cut -d' ' -f2-
+}
+
+tried=" "
+for dev in $(candidates); do
+  [ -d "$dev" ] || continue
+  real=$(cd "$dev" && pwd -P)
+  case $tried in *" $real "*) continue ;; esac
+  tried="$tried$real "
+  [ "$(actool_major "$dev")" -ge 26 ] 2>/dev/null || continue
+
+  echo "Compiling the app icon with $dev" >&2
+  rm -f "$out/Assets.car"
+  if DEVELOPER_DIR=$dev xcrun actool assets/logo/AppIcon.icon --compile "$out" \
+      --app-icon AppIcon --enable-on-demand-resources NO --development-region en \
+      --target-device mac --platform macosx --include-all-app-icons \
+      --minimum-deployment-target 12.0 --standalone-icon-behavior all \
+      --output-partial-info-plist "$out/partial.plist" >"$out/actool.log" 2>&1 &&
+    [ -s "$out/Assets.car" ]; then
+    echo "Compiled $out/Assets.car; appearances in it:" >&2
+    { DEVELOPER_DIR=$dev xcrun assetutil --info "$out/Assets.car" 2>/dev/null || true; } |
+      grep -o '"Appearance" *: *"[^"]*"' | sort -u >&2 || true
+    exit 0
+  fi
+  echo "  failed: $(grep -m1 -o "reason: '[^']*" "$out/actool.log" || tail -n 1 "$out/actool.log")" >&2
+done
+
+echo "No Xcode 26 here could compile the app icon (actool needs macOS 26 for it)" >&2
+exit 1
