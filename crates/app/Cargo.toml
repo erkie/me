@@ -3,6 +3,7 @@ name = "me-app"
 description = "Me's GUI: GPUI windows, file tree, tabs, editor, markdown preview, finder and search."
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 publish = false

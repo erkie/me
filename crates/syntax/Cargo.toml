@@ -3,6 +3,7 @@ name = "me-syntax"
 description = "Syntax highlighting with tree-sitter: lazy grammars, incremental parsing, viewport-only highlighting."
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 rust-version.workspace = true
 publish = false
 

@@ -3,6 +3,7 @@ name = "me-lsp"
 description = "Language server client: JSON-RPC over a server's stdin/stdout, position conversions, and the servers we know how to start."
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 rust-version.workspace = true
 publish = false
 

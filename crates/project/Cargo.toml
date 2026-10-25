@@ -3,6 +3,7 @@ name = "me-project"
 description = "Project-level services: directory listing, fuzzy file finder, project-wide search and replace."
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 rust-version.workspace = true
 publish = false
 

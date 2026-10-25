@@ -181,3 +181,8 @@ a Rust port of Mermaid.
 File-type icons are from [Seti UI](https://github.com/jesseweed/seti-ui)
 (MIT, see `assets/file-icons/LICENSE.md`). To refresh them, run
 `script/gen-file-icons <seti-ui checkout>`.
+
+## License
+
+MIT, see [LICENSE](LICENSE). The file-type icons are from Seti UI (MIT, see
+`assets/file-icons/LICENSE.md`).

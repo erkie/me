@@ -3,6 +3,7 @@ name = "me-cli"
 description = "The `me` command: opens files and folders in the app, optionally waiting (-w)."
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 rust-version.workspace = true
 publish = false
 

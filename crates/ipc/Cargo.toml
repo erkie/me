@@ -3,6 +3,7 @@ name = "me-ipc"
 description = "Protocol and transport between the `me` CLI and the running app."
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 rust-version.workspace = true
 publish = false
 
