@@ -3,7 +3,9 @@
 # (macOS: brew install librsvg; Debian/Ubuntu: apt install librsvg2-bin).
 set -euo pipefail
 cd "$(dirname "$0")/../assets/logo"
-rsvg-convert -w 1024 -h 1024 app-icon.svg -o app-icon-1024.png
-rsvg-convert -w 512 -h 512 app-icon.svg -o app-icon-512.png
-rsvg-convert -w 256 -h 256 app-icon.svg -o app-icon-256.png
+for name in app-icon app-icon-dark; do
+  for size in 1024 512 256; do
+    rsvg-convert -w $size -h $size $name.svg -o $name-$size.png
+  done
+done
 echo "Rendered icons in assets/logo"

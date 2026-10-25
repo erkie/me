@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/logo/app-icon-256.png" width="128" alt="Me icon"></p>
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/logo/app-icon-dark-256.png"><img src="assets/logo/app-icon-256.png" width="128" alt="Me icon"></picture></p>
 
 # Me
 
