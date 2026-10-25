@@ -4,7 +4,8 @@
 //!
 //! A release build checks shortly after launch and every few hours. A newer
 //! build is downloaded in the background, checked (size, checksum, bundle
-//! id, build number, code signature) and swapped in when the app quits, or
+//! id, build number, code signature, and the signing team once this copy
+//! has one) and swapped in when the app quits, or
 //! right away from "Restart to Update". Requests carry a token when there is
 //! one (GitHub allows more requests with it, and a private fork needs it):
 //! `github_token` in settings.json, `GH_TOKEN` / `GITHUB_TOKEN`, or the
@@ -619,8 +620,35 @@ fn verify_app(app: &Path, build: u64) -> anyhow::Result<()> {
         if !status.success() {
             bail!("The update's signature doesn't check out.");
         }
+        // Once this copy is signed with a Developer ID (docs/SIGNING.md),
+        // only builds signed by the same team replace it: publishing a
+        // release takes the signing key, not just access to GitHub.
+        if let Some(ours) = bundle().and_then(|b| team_id(&b))
+            && team_id(app).as_deref() != Some(ours.as_str())
+        {
+            bail!("The update isn't signed by Me's developer ({ours}).");
+        }
     }
     Ok(())
+}
+
+/// The Team ID an app is signed with; `None` when it's signed ad hoc.
+fn team_id(app: &Path) -> Option<String> {
+    let output = Command::new("/usr/bin/codesign")
+        .args(["-dv", "--verbose=2"])
+        .arg(app)
+        .output()
+        .ok()?;
+    parse_team_id(&String::from_utf8_lossy(&output.stderr))
+}
+
+/// The `TeamIdentifier=` line of `codesign -dv`.
+fn parse_team_id(info: &str) -> Option<String> {
+    let id = info
+        .lines()
+        .find_map(|line| line.strip_prefix("TeamIdentifier="))?
+        .trim();
+    (!id.is_empty() && id != "not set").then(|| id.to_string())
 }
 
 /// A string value from an XML property list.
@@ -734,6 +762,18 @@ mod tests {
         );
         assert_eq!(plist_string(plist, "CFBundleVersion"), Some("57"));
         assert_eq!(plist_string(plist, "Missing"), None);
+    }
+
+    #[test]
+    fn team_ids() {
+        let signed = "Executable=/Applications/Me.app/Contents/MacOS/Me\n\
+                      Identifier=com.erkie.me\n\
+                      Authority=Developer ID Application: Someone (ABCDE12345)\n\
+                      TeamIdentifier=ABCDE12345\n";
+        assert_eq!(parse_team_id(signed).as_deref(), Some("ABCDE12345"));
+        let ad_hoc = "Identifier=com.erkie.me\nSignature=adhoc\nTeamIdentifier=not set\n";
+        assert_eq!(parse_team_id(ad_hoc), None);
+        assert_eq!(parse_team_id("code object is not signed at all"), None);
     }
 
     #[test]

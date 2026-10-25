@@ -72,6 +72,10 @@ jobs:
   # Every push to master that passes the tests becomes a build: a universal
   # Me.app uploaded as an artifact and published as the GitHub release
   # build-<n> (n = commit count), which the app updates itself from.
+  #
+  # No signing keys here. With the repository variable SIGNED_RELEASES set
+  # to true, the release is a draft: a Mac outside GitHub signs, notarizes
+  # and publishes it (script/sign-release, docs/SIGNING.md).
   release:
     name: Release (Me.app, universal)
     needs: [linux, macos, app-icon]
@@ -121,6 +125,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BUILD: ${{ steps.package.outputs.build }}
           VERSION: ${{ steps.package.outputs.version }}
+          SIGNED_RELEASES: ${{ vars.SIGNED_RELEASES }}
         run: |
           previous=$(git describe --tags --match 'build-*' --abbrev=0 HEAD^ 2>/dev/null || true)
           {
@@ -132,11 +137,14 @@ jobs:
               git log --no-merges --format='- %s' -20
             fi
           } > notes.md
+          # A draft gets its tag when it's published, so the notes of the
+          # next draft still start from the last published build.
+          if [ "$SIGNED_RELEASES" = true ]; then publish=--draft; else publish=--latest; fi
           # A re-run replaces its own release.
           gh release delete "build-$BUILD" --cleanup-tag --yes 2>/dev/null || true
           gh release create "build-$BUILD" dist/Me-macos.zip dist/Me-macos.zip.sha256 \
             --target "$GITHUB_SHA" --title "Me $VERSION (build $BUILD)" \
-            --notes-file notes.md --latest
+            --notes-file notes.md "$publish"
           # Keep the newest 20 builds.
           gh release list --limit 200 --json tagName,createdAt \
             --jq 'sort_by(.createdAt) | reverse | .[20:] | .[].tagName' |

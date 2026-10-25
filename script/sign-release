@@ -1,0 +1,480 @@
+#!/usr/bin/env python3
+"""Signs and notarizes Me's builds on your own Mac, so the signing key and
+the notarization key never go near GitHub. Setup: docs/SIGNING.md.
+
+With the repository variable SIGNED_RELEASES set to true, CI publishes
+each build of master as a draft release, which nobody sees and the app
+doesn't update from. This takes the newest draft, signs Me.app with your
+Developer ID, has Apple notarize it, staples the ticket, swaps the
+release's zip for the signed one and publishes the release. Drafts it
+skipped over are deleted (the newest one's notes list their commits too).
+
+    script/sign-release              # sign and publish the newest draft
+    script/sign-release build-28     # sign that release, draft or not
+    script/sign-release --dry-run    # sign and notarize, but change nothing
+    script/sign-release --install    # copy this script and run it every
+                                     # five minutes (a launchd agent)
+    script/sign-release --uninstall
+
+Settings come from the environment or from KEY=value lines in
+~/Library/Application Support/Me Signer/config:
+
+    ME_SIGN_REPO            the repository (erkie/me)
+    ME_SIGN_IDENTITY        the signing identity (default: the first
+                            "Developer ID Application" one in the keychain)
+    ME_SIGN_NOTARY_PROFILE  the notarytool keychain profile (me-notary)
+
+The GitHub token (contents: read and write on the repository) is read
+from the keychain item "me-signer-github".
+
+The installed copy is what runs: it never updates itself from the
+repository, so pushing to the repository can't run code on this Mac.
+Re-run --install after reading a new version.
+
+Needs macOS with the Xcode command line tools (notarytool, stapler,
+python3) and works on an Intel Mac too.
+"""
+
+import fcntl
+import hashlib
+import json
+import os
+import plistlib
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from urllib.parse import quote
+
+BUNDLE_ID = "com.erkie.me"
+ZIP = "Me-macos.zip"
+CHECKSUM = "Me-macos.zip.sha256"
+# Signed files are uploaded under these names first and renamed once the
+# unsigned ones are gone, so a run that stops halfway can be finished.
+SIGNED_ZIP = "Me-macos.signed.zip"
+SIGNED_CHECKSUM = "Me-macos.signed.zip.sha256"
+
+LABEL = "com.erkie.me.signer"
+SUPPORT = Path.home() / "Library/Application Support/Me Signer"
+AGENT = Path.home() / "Library/LaunchAgents" / (LABEL + ".plist")
+LOG = Path.home() / "Library/Logs/Me Signer.log"
+INTERVAL = 5 * 60
+
+
+class Failure(Exception):
+    pass
+
+
+def log(message):
+    print(time.strftime("%Y-%m-%d %H:%M:%S"), message, flush=True)
+
+
+def run(args, check=True):
+    """Runs a command; returns (exit status, stdout, stderr)."""
+    result = subprocess.run(
+        [str(a) for a in args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        universal_newlines=True,
+    )
+    if check and result.returncode != 0:
+        raise Failure(
+            "{} failed: {}".format(
+                " ".join(str(a) for a in args[:2]),
+                (result.stderr or result.stdout).strip(),
+            )
+        )
+    return result.returncode, result.stdout, result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Settings
+# ---------------------------------------------------------------------------
+
+
+def settings():
+    values = {}
+    config = SUPPORT / "config"
+    if config.exists():
+        for line in config.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, value = line.split("=", 1)
+                values[key.strip()] = value.strip().strip('"')
+    values.update({k: v for k, v in os.environ.items() if k.startswith("ME_SIGN_")})
+    return values
+
+
+def signing_identity(config):
+    if config.get("ME_SIGN_IDENTITY"):
+        return config["ME_SIGN_IDENTITY"]
+    _, out, _ = run(["security", "find-identity", "-v", "-p", "codesigning"])
+    for name in re.findall(r'"([^"]+)"', out):
+        if name.startswith("Developer ID Application:"):
+            return name
+    raise Failure(
+        'No "Developer ID Application" certificate in the keychain (docs/SIGNING.md, step 1)'
+    )
+
+
+def team_of_identity(identity):
+    match = re.search(r"\(([A-Z0-9]{10})\)\s*$", identity)
+    if not match:
+        raise Failure("Can't tell the team from the identity {!r}".format(identity))
+    return match.group(1)
+
+
+def github_token(config):
+    if config.get("ME_SIGN_GITHUB_TOKEN"):
+        return config["ME_SIGN_GITHUB_TOKEN"]
+    status, out, _ = run(
+        ["security", "find-generic-password", "-s", "me-signer-github", "-w"], check=False
+    )
+    if status != 0 or not out.strip():
+        raise Failure('No "me-signer-github" token in the keychain (docs/SIGNING.md, step 3)')
+    return out.strip()
+
+
+# ---------------------------------------------------------------------------
+# GitHub
+# ---------------------------------------------------------------------------
+
+
+class GitHub:
+    def __init__(self, api, repo, token):
+        self.api = api.rstrip("/")
+        self.repo = repo
+        self.token = token
+
+    def request(self, method, url, json_body=None, upload=None, content_type=None,
+                accept="application/vnd.github+json", save_to=None):
+        """Returns the response body (or None when saved to a file)."""
+        if not url.startswith("http"):
+            url = "{}/repos/{}/{}".format(self.api, self.repo, url)
+        with tempfile.TemporaryDirectory() as tmp:
+            out = save_to or os.path.join(tmp, "body")
+            args = ["curl", "--silent", "--show-error", "--retry", "2",
+                    "--request", method, "--output", out, "--write-out", "%{http_code}",
+                    # Headers come on stdin, so the token isn't in `ps`.
+                    "--config", "-"]
+            if method == "GET":
+                # Asset downloads redirect to storage (curl doesn't send the
+                # token along to another host).
+                args.append("--location")
+            config = [
+                'header = "Authorization: Bearer {}"'.format(self.token),
+                'header = "Accept: {}"'.format(accept),
+                'header = "X-GitHub-Api-Version: 2022-11-28"',
+                'header = "User-Agent: me-sign-release"',
+            ]
+            if json_body is not None:
+                path = os.path.join(tmp, "request.json")
+                with open(path, "w") as f:
+                    json.dump(json_body, f)
+                upload, content_type = path, "application/json"
+            if upload is not None:
+                args += ["--data-binary", "@" + str(upload)]
+                config.append('header = "Content-Type: {}"'.format(content_type))
+            args.append(url)
+            result = subprocess.run(args, input="\n".join(config) + "\n",
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    universal_newlines=True)
+            if result.returncode != 0:
+                raise Failure("{} {}: {}".format(method, url, result.stderr.strip()))
+            status = int(result.stdout.strip() or 0)
+            body = None if save_to else Path(out).read_bytes() if os.path.exists(out) else b""
+            if status >= 400:
+                detail = body.decode(errors="replace") if body else ""
+                raise Failure("{} {}: HTTP {} {}".format(method, url, status, detail[:300]))
+            return body
+
+    def json(self, method, url, body=None):
+        data = self.request(method, url, json_body=body)
+        return json.loads(data) if data else None
+
+    def releases(self):
+        return self.json("GET", "releases?per_page=50")
+
+    def release(self, release):
+        return self.json("GET", release["url"])
+
+    def download(self, asset, path):
+        self.request("GET", asset["url"], accept="application/octet-stream", save_to=str(path))
+
+    def upload(self, release, name, path, content_type):
+        url = release["upload_url"].split("{")[0] + "?name=" + quote(name)
+        return json.loads(self.request("POST", url, upload=path, content_type=content_type))
+
+    def rename_asset(self, asset, name):
+        self.json("PATCH", asset["url"], {"name": name})
+
+    def delete(self, thing):
+        self.request("DELETE", thing["url"])
+
+
+def build_number(release):
+    match = re.fullmatch(r"build-(\d+)", release["tag_name"])
+    return int(match.group(1)) if match else None
+
+
+# ---------------------------------------------------------------------------
+# Signing
+# ---------------------------------------------------------------------------
+
+
+def is_mach_o(path):
+    try:
+        with open(path, "rb") as f:
+            magic = f.read(4)
+    except OSError:
+        return False
+    return magic in (b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf", b"\xce\xfa\xed\xfe",
+                     b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe")
+
+
+def team_of_app(app):
+    _, _, err = run(["codesign", "-dv", "--verbose=2", app], check=False)
+    match = re.search(r"^TeamIdentifier=(\S+)", err, re.M)
+    return match.group(1) if match and match.group(1) != "not" else None
+
+
+def check_bundle(app, build):
+    info_path = app / "Contents/Info.plist"
+    if not info_path.exists():
+        raise Failure("The zip has no Me.app")
+    with open(info_path, "rb") as f:
+        info = plistlib.load(f)
+    if info.get("CFBundleIdentifier") != BUNDLE_ID:
+        raise Failure("The zip's app isn't Me ({})".format(info.get("CFBundleIdentifier")))
+    if info.get("CFBundleVersion") != str(build):
+        raise Failure("The zip has build {}, not {}".format(info.get("CFBundleVersion"), build))
+
+
+def sign(app, identity):
+    main = app / "Contents/MacOS/Me"
+    nested = [p for p in (app / "Contents").rglob("*")
+              if p.is_file() and p != main and is_mach_o(p)]
+    # Inside out: what's nested first, the bundle (and its executable) last.
+    for path in sorted(nested, key=lambda p: -len(p.parts)) + [app]:
+        run(["codesign", "--force", "--options", "runtime", "--timestamp",
+             "--sign", identity, path])
+    run(["codesign", "--verify", "--deep", "--strict", "--verbose=2", app])
+
+
+def notarize(app, work, profile):
+    upload = work / "notarize.zip"
+    run(["ditto", "-c", "-k", "--keepParent", app, upload])
+    log("Waiting for Apple to notarize it")
+    _, out, err = run(["xcrun", "notarytool", "submit", upload, "--keychain-profile", profile,
+                       "--wait", "--timeout", "1h", "--output-format", "json"], check=False)
+    try:
+        result = json.loads(out)
+    except ValueError:
+        raise Failure("notarytool: " + (err or out).strip())
+    if result.get("status") != "Accepted":
+        detail = ""
+        if result.get("id"):
+            _, detail, _ = run(["xcrun", "notarytool", "log", result["id"],
+                                "--keychain-profile", profile], check=False)
+        raise Failure("Notarization {}: {}\n{}".format(
+            result.get("status", "failed"), result.get("message", ""), detail.strip()))
+    upload.unlink()
+    run(["xcrun", "stapler", "staple", app])
+    run(["xcrun", "stapler", "validate", app])
+    _, _, assessment = run(["spctl", "--assess", "--type", "execute", "--verbose=2", app])
+    log("Gatekeeper: " + " ".join(assessment.split()))
+
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Releases
+# ---------------------------------------------------------------------------
+
+
+def finish_interrupted(github, release, dry_run):
+    """Makes sure the release has a zip and its checksum, finishing a run
+    that stopped between uploading the signed files and renaming them."""
+    assets = {a["name"]: a for a in release["assets"]}
+    if ZIP not in assets and SIGNED_ZIP in assets and SIGNED_CHECKSUM in assets:
+        log("Finishing the last run's upload")
+        if not dry_run:
+            github.rename_asset(assets[SIGNED_ZIP], ZIP)
+            github.rename_asset(assets[SIGNED_CHECKSUM], CHECKSUM)
+            return github.release(release)
+    elif not dry_run:
+        for name in (SIGNED_ZIP, SIGNED_CHECKSUM):
+            if name in assets:
+                github.delete(assets[name])
+        if SIGNED_ZIP in assets or SIGNED_CHECKSUM in assets:
+            return github.release(release)
+    return release
+
+
+def replace_zip(github, release, signed_zip, work):
+    old = {a["name"]: a for a in release["assets"]}
+    checksum = work / "checksum"
+    checksum.write_text(sha256(signed_zip) + "\n")
+    log("Uploading the signed build")
+    new_zip = github.upload(release, SIGNED_ZIP, signed_zip, "application/zip")
+    new_checksum = github.upload(release, SIGNED_CHECKSUM, checksum, "text/plain")
+    for name in (ZIP, CHECKSUM):
+        if name in old:
+            github.delete(old[name])
+    github.rename_asset(new_zip, ZIP)
+    github.rename_asset(new_checksum, CHECKSUM)
+
+
+def sign_release(github, release, build, identity, profile, dry_run):
+    log("Signing {} ({})".format(release["tag_name"], "draft" if release["draft"] else "published"))
+    release = finish_interrupted(github, release, dry_run)
+    assets = {a["name"]: a for a in release["assets"]}
+    if ZIP not in assets:
+        raise Failure("{} has no {}".format(release["tag_name"], ZIP))
+    work = Path(tempfile.mkdtemp(prefix="me-sign-"))
+    try:
+        zip_path = work / ZIP
+        github.download(assets[ZIP], zip_path)
+        if CHECKSUM in assets:
+            github.download(assets[CHECKSUM], work / CHECKSUM)
+            expected = (work / CHECKSUM).read_text().split()[0]
+            if sha256(zip_path) != expected:
+                raise Failure("{} doesn't match its checksum".format(ZIP))
+        unpacked = work / "unpacked"
+        run(["ditto", "-x", "-k", zip_path, unpacked])
+        app = unpacked / "Me.app"
+        check_bundle(app, build)
+        team = team_of_identity(identity)
+        stapled = run(["xcrun", "stapler", "validate", app], check=False)[0] == 0
+        if team_of_app(app) == team and stapled:
+            log("Already signed and notarized")
+        else:
+            sign(app, identity)
+            notarize(app, work, profile)
+            signed_zip = work / "signed" / ZIP
+            signed_zip.parent.mkdir()
+            run(["ditto", "-c", "-k", "--keepParent", app, signed_zip])
+            if dry_run:
+                log("Dry run: signed and notarized {} (not uploaded)".format(signed_zip))
+                return
+            replace_zip(github, release, signed_zip, work)
+        if release["draft"] and not dry_run:
+            github.json("PATCH", release["url"], {"draft": False, "make_latest": "true"})
+            log("Published " + release["html_url"])
+    finally:
+        if not dry_run:
+            shutil.rmtree(str(work), ignore_errors=True)
+
+
+def sign_pending(github, identity, profile, dry_run, tag=None):
+    releases = github.releases()
+    builds = [(build_number(r), r) for r in releases if build_number(r) is not None]
+    if tag:
+        found = [(n, r) for n, r in builds if r["tag_name"] == tag]
+        if not found:
+            raise Failure("No release {}".format(tag))
+        sign_release(github, found[0][1], found[0][0], identity, profile, dry_run)
+        return
+    published = max([n for n, r in builds if not r["draft"]] or [0])
+    drafts = sorted([(n, r) for n, r in builds if r["draft"]], key=lambda b: b[0])
+    if not drafts:
+        return
+    newest, release = drafts[-1]
+    if newest > published:
+        sign_release(github, release, newest, identity, profile, dry_run)
+    # Drafts older than what's published now: their commits are in its notes.
+    for n, r in drafts:
+        if n < newest or n <= published:
+            if dry_run:
+                log("Dry run: would delete the draft {}".format(r["tag_name"]))
+            else:
+                log("Deleting the draft {} (superseded)".format(r["tag_name"]))
+                github.delete(r)
+
+
+# ---------------------------------------------------------------------------
+# launchd
+# ---------------------------------------------------------------------------
+
+
+def install():
+    SUPPORT.mkdir(parents=True, exist_ok=True)
+    AGENT.parent.mkdir(parents=True, exist_ok=True)
+    LOG.parent.mkdir(parents=True, exist_ok=True)
+    script = SUPPORT / "sign-release"
+    shutil.copyfile(__file__, str(script))
+    script.chmod(0o755)
+    with open(str(AGENT), "wb") as f:
+        plistlib.dump({
+            "Label": LABEL,
+            "ProgramArguments": ["/usr/bin/python3", str(script)],
+            "StartInterval": INTERVAL,
+            "RunAtLoad": True,
+            "StandardOutPath": str(LOG),
+            "StandardErrorPath": str(LOG),
+            "EnvironmentVariables": {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
+        }, f)
+    run(["launchctl", "unload", AGENT], check=False)
+    run(["launchctl", "load", "-w", AGENT])
+    print("Installed {}; it runs every {} minutes and logs to {}".format(
+        script, INTERVAL // 60, LOG))
+
+
+def uninstall():
+    if AGENT.exists():
+        run(["launchctl", "unload", "-w", AGENT], check=False)
+        AGENT.unlink()
+    print("Uninstalled (settings in {} are kept)".format(SUPPORT))
+
+
+def notify(message):
+    if sys.platform == "darwin":
+        script = 'display notification {} with title "Me Signer"'.format(
+            json.dumps(message[:200]))
+        run(["osascript", "-e", script], check=False)
+
+
+def main(argv):
+    args = [a for a in argv if not a.startswith("--")]
+    flags = {a for a in argv if a.startswith("--")}
+    unknown = flags - {"--dry-run", "--install", "--uninstall", "--help"}
+    if unknown or len(args) > 1 or "--help" in flags:
+        print(__doc__)
+        return 0 if "--help" in flags else 2
+    if "--install" in flags:
+        install()
+        return 0
+    if "--uninstall" in flags:
+        uninstall()
+        return 0
+    SUPPORT.mkdir(parents=True, exist_ok=True)
+    lock = open(str(SUPPORT / "lock"), "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return 0  # Another run is busy.
+    try:
+        config = settings()
+        github = GitHub(config.get("ME_SIGN_API", "https://api.github.com"),
+                        config.get("ME_SIGN_REPO", "erkie/me"), github_token(config))
+        identity = signing_identity(config)
+        profile = config.get("ME_SIGN_NOTARY_PROFILE", "me-notary")
+        sign_pending(github, identity, profile, "--dry-run" in flags, args[0] if args else None)
+        return 0
+    except Failure as err:
+        log("Error: {}".format(err))
+        notify(str(err))
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

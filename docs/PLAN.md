@@ -467,11 +467,14 @@ when idle; the editor's own footprint doesn't change.
   cutoffs, language servers) and `keymap.json`, both hot-reloaded.
 * Scroll sync between source and preview (pulldown-cmark source offsets).
 * Minimal git awareness in the tree (modified/untracked dots). No git UI.
-* Distribution: Developer ID signing, notarization, Homebrew cask.
-  Auto-update is done: CI publishes each master build as the GitHub release
-  `build-<n>`; the app checks `releases/latest` (with a token if one is
-  set), downloads and verifies the zip, and swaps the bundle in on quit or
-  restart.
+* Distribution: Homebrew cask. Auto-update is done: CI publishes each
+  master build as the GitHub release `build-<n>`; the app checks
+  `releases/latest` (with a token if one is set), downloads and verifies
+  the zip, and swaps the bundle in on quit or restart. Signing is done
+  too, off GitHub: CI publishes drafts, and `script/sign-release` on a Mac
+  of ours signs them with the Developer ID, notarizes, staples and
+  publishes them (docs/SIGNING.md). A signed copy only installs updates
+  from the same Team ID.
 * Accessibility pass (VoiceOver labels for the tree, tabs, and editor lines).
 
 ### Phase 4: Linux and Windows

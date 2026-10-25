@@ -88,9 +88,16 @@ builds a universal Me.app (Apple silicon and Intel), uploads it as an
 artifact, and publishes it as the GitHub release `build-<n>`, where n is
 master's commit count, with the commits since the last build as notes.
 
+GitHub never holds a signing key. Builds are signed with a Developer ID
+and notarized by a Mac outside GitHub, which takes each draft release,
+signs it and publishes it ([docs/SIGNING.md](docs/SIGNING.md)). Until
+that Mac is set up, builds are signed ad hoc: right-click → Open the
+first time.
+
 Me checks for a newer build half a minute after launch and every six
 hours, downloads it in the background and checks it (size, SHA-256, bundle
-id, build number, code signature). It's installed when you quit, or right
+id, build number, code signature). Once you run a signed build, it only
+installs builds signed by the same team. It's installed when you quit, or right
 away with **Restart to Update** in the status bar. **Me → Check for
 Updates…** checks now; **About Me** shows the build you have.
 
