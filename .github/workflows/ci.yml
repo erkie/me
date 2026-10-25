@@ -1,7 +1,10 @@
 name: CI
 
+# Pushes to master and pull requests; other branches only through a pull
+# request, so the same commit isn't built twice.
 on:
   push:
+    branches: [master]
   pull_request:
   workflow_dispatch:
 
@@ -32,32 +35,34 @@ jobs:
       - run: cargo build --workspace --locked
       - run: cargo test --workspace --locked
 
+  # The macOS jobs run on our own Mac (a self-hosted runner, see
+  # docs/RUNNER.md): no Actions minutes, and builds stay warm in a target
+  # directory outside the checkout.
   macos:
     name: macOS (test + Me.app)
-    runs-on: macos-15
+    runs-on: [self-hosted, macOS]
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../target
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
+      # Checks that the app still bundles; the release job publishes it.
       - run: script/bundle-macos
-      - name: Zip Me.app
-        run: ditto -c -k --keepParent dist/Me.app dist/Me-macos.zip
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Me-macos
-          path: dist/Me-macos.zip
 
   # Every push to master that passes the tests becomes a build: a universal
   # Me.app uploaded as an artifact and published as the GitHub release
   # build-<n> (n = commit count), which the app updates itself from.
   release:
     name: Release (Me.app, universal)
-    needs: [linux, macos]
+    # Not the Linux job: it uses Actions minutes, which can run out.
+    needs: [macos]
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    runs-on: macos-15
+    runs-on: [self-hosted, macOS]
     permissions:
       contents: write
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../target
     steps:
       - uses: actions/checkout@v4
         with:
@@ -67,7 +72,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin, x86_64-apple-darwin
-      - uses: Swatinem/rust-cache@v2
       - run: script/bundle-macos --universal
       - name: Package
         id: package
@@ -78,9 +82,13 @@ jobs:
           shasum -a 256 dist/Me-macos.zip | cut -d' ' -f1 > dist/Me-macos.zip.sha256
           echo "build=$build" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+      # The release keeps the build; the artifact is a short-lived copy, and
+      # a full artifact storage quota mustn't stop the release.
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: Me-macos-build-${{ steps.package.outputs.build }}
+          retention-days: 7
           path: |
             dist/Me-macos.zip
             dist/Me-macos.zip.sha256

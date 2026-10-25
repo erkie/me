@@ -81,7 +81,7 @@ export EDITOR="me -w"
 ## Updates
 
 Every push to master that passes CI becomes a build: the `release` job
-builds a universal Me.app (Apple silicon and Intel), uploads it as an
+(on the self-hosted Mac, see [docs/RUNNER.md](docs/RUNNER.md)) builds a universal Me.app (Apple silicon and Intel), uploads it as an
 artifact, and publishes it as the GitHub release `build-<n>`, where n is
 master's commit count, with the commits since the last build as notes.
 
@@ -159,6 +159,10 @@ ME_TRACE_STARTUP=1 cargo run --release -p me-app   # print startup timings
 
 Linux needs the GPUI system libraries:
 `libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libfontconfig1-dev libfreetype-dev libx11-xcb-dev libvulkan1`.
+
+CI runs on pushes to master and on pull requests: Linux on GitHub's
+machines, the macOS tests and the release build on our own Mac (a
+self-hosted runner; how to set one up is in [docs/RUNNER.md](docs/RUNNER.md)).
 
 | Crate | What it is |
 |-------|------------|

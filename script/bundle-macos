@@ -27,19 +27,20 @@ build=$(git rev-list --count HEAD 2>/dev/null || echo 1)
 commit=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
 export ME_BUILD=$build ME_COMMIT=$commit
 
+target=${CARGO_TARGET_DIR:-target}
 if $universal; then
   rustup target add aarch64-apple-darwin x86_64-apple-darwin >/dev/null
   cargo build --release -p me-app -p me-cli --target aarch64-apple-darwin
   cargo build --release -p me-app -p me-cli --target x86_64-apple-darwin
-  mkdir -p target/universal
+  mkdir -p "$target/universal"
   for bin in me-app me; do
-    lipo -create -output "target/universal/$bin" \
-      "target/aarch64-apple-darwin/release/$bin" "target/x86_64-apple-darwin/release/$bin"
+    lipo -create -output "$target/universal/$bin" \
+      "$target/aarch64-apple-darwin/release/$bin" "$target/x86_64-apple-darwin/release/$bin"
   done
-  out=target/universal
+  out=$target/universal
 else
   cargo build --release -p me-app -p me-cli
-  out=target/release
+  out=$target/release
 fi
 
 app=dist/Me.app
