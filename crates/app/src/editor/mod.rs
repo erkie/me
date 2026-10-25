@@ -186,6 +186,9 @@ pub struct EditorView {
     pub(crate) notice: Option<SharedString>,
     was_dirty: bool,
     loading: bool,
+    /// The file has no text to show (binary, or unreadable): only the
+    /// notice is drawn, with no gutter or cursor.
+    blank: bool,
     disk_mtime: Option<SystemTime>,
     /// Never loads its file (see [`Self::placeholder`]).
     placeholder: bool,
@@ -259,6 +262,7 @@ impl EditorView {
             notice: None,
             was_dirty: false,
             loading: false,
+            blank: false,
             disk_mtime: None,
             placeholder: false,
             pending_restore: None,
@@ -944,6 +948,7 @@ impl EditorView {
         self.loading = false;
         self.notice = loaded.notice.map(SharedString::from);
         self.read_only = loaded.read_only;
+        self.blank = loaded.blank;
         self.disk_mtime = loaded.mtime;
         self.state = EditorState::new(loaded.doc);
         self.scroll = ScrollPosition::default();
@@ -1000,6 +1005,11 @@ impl EditorView {
 
     pub fn is_loading(&self) -> bool {
         self.loading
+    }
+
+    /// Nothing to show but the notice: still loading, binary, or unreadable.
+    pub fn is_blank(&self) -> bool {
+        self.loading || self.blank
     }
 
     pub fn language_name(&self) -> Option<&'static str> {
@@ -1810,7 +1820,11 @@ impl Render for EditorView {
             .track_focus(&self.focus_handle)
             .size_full()
             .overflow_hidden()
-            .cursor(gpui::CursorStyle::IBeam)
+            .cursor(if self.is_blank() {
+                gpui::CursorStyle::Arrow
+            } else {
+                gpui::CursorStyle::IBeam
+            })
             // Movement
             .on_action(
                 cx.listener(|this, _: &MoveLeft, _, cx| this.motion(cx, |s| s.move_left(false))),
@@ -2047,6 +2061,7 @@ impl Render for EditorView {
 struct Loaded {
     doc: Document,
     read_only: bool,
+    blank: bool,
     notice: Option<String>,
     mtime: Option<SystemTime>,
 }
@@ -2060,6 +2075,7 @@ fn load_file(path: &Path) -> Loaded {
             return Loaded {
                 doc: Document::new(),
                 read_only: false,
+                blank: false,
                 notice: None,
                 mtime: None,
             };
@@ -2068,6 +2084,7 @@ fn load_file(path: &Path) -> Loaded {
             return Loaded {
                 doc: Document::new(),
                 read_only: true,
+                blank: true,
                 notice: Some(format!("Could not open: {err}")),
                 mtime,
             };
@@ -2077,7 +2094,11 @@ fn load_file(path: &Path) -> Loaded {
         return Loaded {
             doc: Document::new(),
             read_only: true,
-            notice: Some(format!("Binary file ({})", human_size(bytes.len() as u64))),
+            blank: true,
+            notice: Some(format!(
+                "Binary file ({}), can't be shown as text",
+                human_size(bytes.len() as u64)
+            )),
             mtime,
         };
     }
@@ -2085,6 +2106,7 @@ fn load_file(path: &Path) -> Loaded {
         Ok(text) => Loaded {
             doc: Document::from_str(&text),
             read_only: false,
+            blank: false,
             notice: None,
             mtime,
         },
@@ -2093,6 +2115,7 @@ fn load_file(path: &Path) -> Loaded {
             Loaded {
                 doc: Document::from_str(&text),
                 read_only: true,
+                blank: false,
                 notice: Some("Not valid UTF-8: opened read-only".into()),
                 mtime,
             }
@@ -2129,5 +2152,32 @@ pub fn human_size(bytes: u64) -> String {
         format!("{bytes} B")
     } else {
         format!("{size:.1} {}", UNITS[unit])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn load(bytes: &[u8]) -> Loaded {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file");
+        std::fs::write(&path, bytes).unwrap();
+        load_file(&path)
+    }
+
+    #[test]
+    fn binary_files_load_blank_and_read_only() {
+        let loaded = load(b"\x7fELF\x00\x01\x02");
+        assert!(loaded.blank && loaded.read_only);
+        assert!(loaded.notice.unwrap().starts_with("Binary file"));
+    }
+
+    #[test]
+    fn text_files_load_editable() {
+        let loaded = load("hello\n".as_bytes());
+        assert!(!loaded.blank && !loaded.read_only);
+        let loaded = load(b"caf\xe9\n");
+        assert!(!loaded.blank && loaded.read_only);
     }
 }
