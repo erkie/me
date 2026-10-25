@@ -5,9 +5,10 @@
 //! A release build checks shortly after launch and every few hours. A newer
 //! build is downloaded in the background, checked (size, checksum, bundle
 //! id, build number, code signature) and swapped in when the app quits, or
-//! right away from "Restart to Update". The repository is private, so
-//! requests carry a token: `github_token` in settings.json, `GH_TOKEN` /
-//! `GITHUB_TOKEN`, or the GitHub CLI's (`gh auth token`).
+//! right away from "Restart to Update". Requests carry a token when there is
+//! one (GitHub allows more requests with it, and a private fork needs it):
+//! `github_token` in settings.json, `GH_TOKEN` / `GITHUB_TOKEN`, or the
+//! GitHub CLI's (`gh auth token`).
 //!
 //! Development builds (no build number compiled in) and copies that can't
 //! be replaced (not in a .app, translocated, read-only) never update.
@@ -439,8 +440,8 @@ impl Source {
         match status {
             200 => parse_release(&body),
             404 if self.token.is_none() => bail!(
-                "{} is private: sign in with the GitHub CLI (gh auth login), or put a token in \
-                 settings.json as \"github_token\".",
+                "No builds of {} yet (or it's private: sign in with the GitHub CLI, gh auth \
+                 login, or put a token in settings.json as \"github_token\").",
                 self.repository
             ),
             404 => bail!(

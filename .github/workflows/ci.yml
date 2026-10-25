@@ -35,17 +35,13 @@ jobs:
       - run: cargo build --workspace --locked
       - run: cargo test --workspace --locked
 
-  # The macOS jobs run on our own Mac (a self-hosted runner, see
-  # docs/RUNNER.md): no Actions minutes, and builds stay warm in a target
-  # directory outside the checkout.
   macos:
     name: macOS (test + Me.app)
-    runs-on: [self-hosted, macOS]
-    env:
-      CARGO_TARGET_DIR: ${{ github.workspace }}/../target
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
       # Checks that the app still bundles; the release job publishes it.
       - run: script/bundle-macos
@@ -55,14 +51,11 @@ jobs:
   # build-<n> (n = commit count), which the app updates itself from.
   release:
     name: Release (Me.app, universal)
-    # Not the Linux job: it uses Actions minutes, which can run out.
-    needs: [macos]
+    needs: [linux, macos]
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    runs-on: [self-hosted, macOS]
+    runs-on: macos-15
     permissions:
       contents: write
-    env:
-      CARGO_TARGET_DIR: ${{ github.workspace }}/../target
     steps:
       - uses: actions/checkout@v4
         with:
@@ -72,6 +65,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
       - run: script/bundle-macos --universal
       - name: Package
         id: package

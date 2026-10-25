@@ -25,8 +25,9 @@ pub struct Settings {
     pub language_servers: HashMap<String, LanguageServerSettings>,
     /// Download new builds from GitHub and install them on restart.
     pub auto_update: bool,
-    /// A token that can read the repository's releases (it's private). By
-    /// default `GH_TOKEN`/`GITHUB_TOKEN` or the GitHub CLI's is used.
+    /// A GitHub token for update checks (optional; needed only if the
+    /// repository is private). By default `GH_TOKEN`/`GITHUB_TOKEN` or the
+    /// GitHub CLI's is used.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub github_token: Option<String>,
 }

@@ -81,7 +81,7 @@ export EDITOR="me -w"
 ## Updates
 
 Every push to master that passes CI becomes a build: the `release` job
-(on the self-hosted Mac, see [docs/RUNNER.md](docs/RUNNER.md)) builds a universal Me.app (Apple silicon and Intel), uploads it as an
+builds a universal Me.app (Apple silicon and Intel), uploads it as an
 artifact, and publishes it as the GitHub release `build-<n>`, where n is
 master's commit count, with the commits since the last build as notes.
 
@@ -91,11 +91,11 @@ id, build number, code signature). It's installed when you quit, or right
 away with **Restart to Update** in the status bar. **Me → Check for
 Updates…** checks now; **About Me** shows the build you have.
 
-The repository is private, so Me needs a token that can read it: the GitHub
-CLI's if you're signed in (`gh auth login`), else `GH_TOKEN` or
-`GITHUB_TOKEN`, else `"github_token"` in `settings.json`. Set
-`"auto_update": false` there to turn updates off. Development builds
-(`cargo run`) never update.
+Checking needs no account. If you're signed in to the GitHub CLI, or have
+`GH_TOKEN`/`GITHUB_TOKEN` or `"github_token"` in `settings.json`, Me sends
+that token along (GitHub allows more requests with one; a fork that's
+private needs it). Set `"auto_update": false` in `settings.json` to turn
+updates off. Development builds (`cargo run`) never update.
 
 ## Usage
 
@@ -160,9 +160,8 @@ ME_TRACE_STARTUP=1 cargo run --release -p me-app   # print startup timings
 Linux needs the GPUI system libraries:
 `libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libfontconfig1-dev libfreetype-dev libx11-xcb-dev libvulkan1`.
 
-CI runs on pushes to master and on pull requests: Linux on GitHub's
-machines, the macOS tests and the release build on our own Mac (a
-self-hosted runner; how to set one up is in [docs/RUNNER.md](docs/RUNNER.md)).
+CI runs on pushes to master and on pull requests, on GitHub's Linux and
+macOS machines.
 
 | Crate | What it is |
 |-------|------------|
