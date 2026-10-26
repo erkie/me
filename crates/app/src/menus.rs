@@ -171,7 +171,7 @@ fn set_menus(cx: &mut App) {
             MenuItem::separator(),
             MenuItem::action("Toggle Sidebar", ToggleSidebar),
             MenuItem::action("Reveal in Sidebar", RevealInSidebar),
-            MenuItem::action("Toggle Markdown Preview", TogglePreview),
+            MenuItem::action("Toggle Preview", TogglePreview),
             MenuItem::separator(),
             MenuItem::action("Word Wrap", ToggleWordWrap),
             MenuItem::action("Bigger Text", IncreaseFontSize),

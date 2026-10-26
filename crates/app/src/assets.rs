@@ -7,7 +7,8 @@ use gpui::{AssetSource, Result, SharedString};
 
 pub struct Assets;
 
-// The image painting toolbar's icons, from the full Lucide set.
+// The image painting toolbar's icons and the table toggle's, from the full
+// Lucide set.
 gpui_kit_assets::icon_assets!(
     PaintIcons,
     [
@@ -23,6 +24,7 @@ gpui_kit_assets::icon_assets!(
         Redo2,
         ZoomIn,
         ZoomOut,
+        Table,
     ]
 );
 

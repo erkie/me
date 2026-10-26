@@ -189,6 +189,8 @@ pub struct EditorView {
     /// The file has no text to show (binary, or unreadable): only the
     /// notice is drawn, with no gutter or cursor.
     blank: bool,
+    /// The file isn't valid UTF-8 and was opened with replacement chars.
+    lossy: bool,
     disk_mtime: Option<SystemTime>,
     /// Never loads its file (see [`Self::placeholder`]).
     placeholder: bool,
@@ -263,6 +265,7 @@ impl EditorView {
             was_dirty: false,
             loading: false,
             blank: false,
+            lossy: false,
             disk_mtime: None,
             placeholder: false,
             pending_restore: None,
@@ -949,6 +952,7 @@ impl EditorView {
         self.notice = loaded.notice.map(SharedString::from);
         self.read_only = loaded.read_only;
         self.blank = loaded.blank;
+        self.lossy = loaded.lossy;
         self.disk_mtime = loaded.mtime;
         self.state = EditorState::new(loaded.doc);
         self.scroll = ScrollPosition::default();
@@ -1005,6 +1009,11 @@ impl EditorView {
 
     pub fn is_loading(&self) -> bool {
         self.loading
+    }
+
+    /// Opened with replacement characters: the file isn't valid UTF-8.
+    pub fn is_lossy(&self) -> bool {
+        self.lossy
     }
 
     /// Nothing to show but the notice: still loading, binary, or unreadable.
@@ -2062,6 +2071,7 @@ struct Loaded {
     doc: Document,
     read_only: bool,
     blank: bool,
+    lossy: bool,
     notice: Option<String>,
     mtime: Option<SystemTime>,
 }
@@ -2076,6 +2086,7 @@ fn load_file(path: &Path) -> Loaded {
                 doc: Document::new(),
                 read_only: false,
                 blank: false,
+                lossy: false,
                 notice: None,
                 mtime: None,
             };
@@ -2085,6 +2096,7 @@ fn load_file(path: &Path) -> Loaded {
                 doc: Document::new(),
                 read_only: true,
                 blank: true,
+                lossy: false,
                 notice: Some(format!("Could not open: {err}")),
                 mtime,
             };
@@ -2095,6 +2107,7 @@ fn load_file(path: &Path) -> Loaded {
             doc: Document::new(),
             read_only: true,
             blank: true,
+            lossy: false,
             notice: Some(format!(
                 "Binary file ({}), can't be shown as text",
                 human_size(bytes.len() as u64)
@@ -2107,6 +2120,7 @@ fn load_file(path: &Path) -> Loaded {
             doc: Document::from_str(&text),
             read_only: false,
             blank: false,
+            lossy: false,
             notice: None,
             mtime,
         },
@@ -2116,6 +2130,7 @@ fn load_file(path: &Path) -> Loaded {
                 doc: Document::from_str(&text),
                 read_only: true,
                 blank: false,
+                lossy: true,
                 notice: Some("Not valid UTF-8: opened read-only".into()),
                 mtime,
             }

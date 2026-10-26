@@ -3848,6 +3848,7 @@ dependencies = [
  "anyhow",
  "core-foundation 0.10.1",
  "dirs 6.0.0",
+ "encoding_rs",
  "futures",
  "gpui-base",
  "gpui-component",
@@ -3861,6 +3862,7 @@ dependencies = [
  "me-project",
  "me-syntax",
  "me-text",
+ "memchr",
  "merman",
  "nucleo",
  "parking_lot",
@@ -3869,6 +3871,7 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "trash",
+ "unicode-width",
  "winresource",
 ]
 

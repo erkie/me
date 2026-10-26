@@ -57,7 +57,12 @@ pub struct FileIcon {
 }
 
 /// Types Seti doesn't know, checked before its table.
-static EXTRA_RULES: &[Rule] = &[(Match::EndsWith(".mdc"), "markdown", IconColor::Blue)];
+static EXTRA_RULES: &[Rule] = &[
+    (Match::EndsWith(".mdc"), "markdown", IconColor::Blue),
+    // Tables that open like CSV.
+    (Match::EndsWith(".tsv"), "csv", IconColor::Green),
+    (Match::EndsWith(".psv"), "csv", IconColor::Green),
+];
 
 /// The icon for a file name. As in Seti's stylesheet, the last matching
 /// rule wins, so `README.md` beats `.md`.

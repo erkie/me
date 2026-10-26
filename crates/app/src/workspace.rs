@@ -17,6 +17,7 @@ use gpui::{
 
 use crate::actions::*;
 use crate::app_state;
+use crate::csv::{CsvPreview, SetTableOption, is_table};
 use crate::editor::completion::{self, CompletionTrigger};
 use crate::editor::diagnostics::Severity;
 use crate::editor::{EditorEvent, EditorView};
@@ -59,6 +60,7 @@ enum SidebarMode {
 pub enum Preview {
     Markdown(Entity<MarkdownPreview>),
     Image(Entity<ImagePreview>),
+    Table(Entity<CsvPreview>),
 }
 
 impl Preview {
@@ -66,6 +68,7 @@ impl Preview {
         match self {
             Preview::Markdown(p) => p.focus_handle(cx),
             Preview::Image(p) => p.focus_handle(cx),
+            Preview::Table(p) => p.focus_handle(cx),
         }
     }
 
@@ -73,6 +76,7 @@ impl Preview {
         match self {
             Preview::Markdown(p) => p.clone().into_any_element(),
             Preview::Image(p) => p.clone().into_any_element(),
+            Preview::Table(p) => p.clone().into_any_element(),
         }
     }
 }
@@ -2046,6 +2050,10 @@ impl Workspace {
             } else if is_markdown(&path) && options.line.is_none() {
                 let (preview, subscription) = self.markdown_preview(&editor, window, cx);
                 (Some(preview), Some(subscription))
+            } else if is_table(&path) && options.line.is_none() {
+                let editor = editor.clone();
+                let table = cx.new(|cx| CsvPreview::new(editor, cx));
+                (Some(Preview::Table(table)), None)
             } else {
                 (None, None)
             };
@@ -2313,9 +2321,16 @@ impl Workspace {
         if !self.tabs[ix].has_source {
             return;
         }
-        if self.tabs[ix].preview.is_none() {
-            // Any file can be read as markdown.
-            let editor = self.tabs[ix].editor.clone();
+        let editor = self.tabs[ix].editor.clone();
+        let table = editor.read(cx).path().is_some_and(is_table);
+        if self.tabs[ix].preview.is_none() && table {
+            // Opened at a line (from search, say): the table comes later.
+            let table = cx.new(|cx| CsvPreview::new(editor, cx));
+            let tab = &mut self.tabs[ix];
+            tab.preview = Some(Preview::Table(table));
+            tab.show_preview = true;
+        } else if self.tabs[ix].preview.is_none() {
+            // Any other file can be read as markdown.
             let (preview, subscription) = self.markdown_preview(&editor, window, cx);
             let tab = &mut self.tabs[ix];
             tab.preview = Some(preview);
@@ -2837,10 +2852,10 @@ impl Workspace {
             })
             .collect();
 
-        let preview_toggle = self
-            .active_tab()
-            .filter(|t| t.has_source)
-            .and_then(|t| t.preview.as_ref().map(|_| t.show_preview));
+        let preview_toggle = self.active_tab().filter(|t| t.has_source).and_then(|t| {
+            let table = matches!(t.preview.as_ref()?, Preview::Table(_));
+            Some((t.show_preview, table))
+        });
         div()
             .id("tab-bar")
             .h(px(TITLE_BAR_HEIGHT))
@@ -2888,7 +2903,7 @@ impl Workspace {
                             })),
                     ),
             )
-            .when_some(preview_toggle, |el, showing| {
+            .when_some(preview_toggle, |el, (showing, table)| {
                 el.child(
                     div()
                         .id("preview-toggle")
@@ -2902,15 +2917,19 @@ impl Workspace {
                         .hover(|s| s.text_color(palette.text))
                         .child(
                             svg()
-                                .path(if showing {
-                                    "icons/eye.svg"
-                                } else {
-                                    "icons/file-text.svg"
+                                .path(match (showing, table) {
+                                    (true, true) => "icons/table.svg",
+                                    (true, false) => "icons/eye.svg",
+                                    (false, _) => "icons/file-text.svg",
                                 })
                                 .size(px(14.))
                                 .text_color(palette.text_secondary),
                         )
-                        .child(if showing { "Preview" } else { "Source" })
+                        .child(match (showing, table) {
+                            (true, true) => "Table",
+                            (true, false) => "Preview",
+                            (false, _) => "Source",
+                        })
                         .on_click(
                             cx.listener(|this, _, window, cx| this.toggle_preview(window, cx)),
                         ),
@@ -3159,6 +3178,9 @@ impl Workspace {
                         format!("{} · {source_key} for source", image.read(cx).info).into()
                     }
                     Preview::Image(image) => image.read(cx).status(),
+                    Preview::Table(table) => {
+                        format!("{} · {source_key} for source", table.read(cx).status()).into()
+                    }
                 }));
             } else if !editor.is_blank() {
                 let sels = editor.state.selections();
@@ -3180,8 +3202,12 @@ impl Workspace {
                     ));
                 }
             }
+            // A table decodes what the editor couldn't; the notice is about
+            // the source.
+            let showing_table = tab.show_preview && matches!(tab.preview, Some(Preview::Table(_)));
             if let Some(notice) = &editor.notice
                 && tab.has_source
+                && !showing_table
             {
                 left.push(label(notice.clone()));
             }
@@ -3229,34 +3255,65 @@ impl Workspace {
                     }),
                 ));
             }
-            right.push(status_item(
-                "status-language",
-                language.unwrap_or("Plain Text").into(),
-                &palette,
-                cx.listener(move |_, event: &MouseDownEvent, window, cx| {
-                    language_menu(language).show(event.position, window, cx)
-                }),
-            ));
-            right.push(label(
-                match editor.state.doc.line_ending() {
-                    me_text::LineEnding::Lf => "LF",
-                    me_text::LineEnding::CrLf => "CRLF",
+            let table = match (&tab.preview, tab.show_preview) {
+                (Some(Preview::Table(table)), true) => Some(table.clone()),
+                _ => None,
+            };
+            if let Some(table) = table {
+                // How the file is read, each with its menu.
+                let t = table.read(cx);
+                let items = [
+                    ("status-table-separator", t.delimiter_label()),
+                    ("status-table-header", t.header_label()),
+                    ("status-table-encoding", t.encoding_name().into()),
+                ];
+                for (id, text) in items {
+                    let table = table.clone();
+                    right.push(status_item(
+                        id,
+                        text,
+                        &palette,
+                        move |event: &MouseDownEvent, window, cx| {
+                            let t = table.read(cx);
+                            let menu = match id {
+                                "status-table-separator" => t.delimiter_menu(),
+                                "status-table-header" => t.header_menu(),
+                                _ => t.encoding_menu(),
+                            };
+                            menu.show(event.position, window, cx)
+                        },
+                    ));
                 }
-                .into(),
-            ));
-            let (hard_tabs, width) = (editor.state.hard_tabs, editor.state.tab_width);
-            right.push(status_item(
-                "status-indent",
-                if hard_tabs {
-                    format!("Tab Size: {width}").into()
-                } else {
-                    format!("Spaces: {width}").into()
-                },
-                &palette,
-                cx.listener(move |_, event: &MouseDownEvent, window, cx| {
-                    indentation_menu(hard_tabs, width).show(event.position, window, cx)
-                }),
-            ));
+            } else {
+                right.push(status_item(
+                    "status-language",
+                    language.unwrap_or("Plain Text").into(),
+                    &palette,
+                    cx.listener(move |_, event: &MouseDownEvent, window, cx| {
+                        language_menu(language).show(event.position, window, cx)
+                    }),
+                ));
+                right.push(label(
+                    match editor.state.doc.line_ending() {
+                        me_text::LineEnding::Lf => "LF",
+                        me_text::LineEnding::CrLf => "CRLF",
+                    }
+                    .into(),
+                ));
+                let (hard_tabs, width) = (editor.state.hard_tabs, editor.state.tab_width);
+                right.push(status_item(
+                    "status-indent",
+                    if hard_tabs {
+                        format!("Tab Size: {width}").into()
+                    } else {
+                        format!("Spaces: {width}").into()
+                    },
+                    &palette,
+                    cx.listener(move |_, event: &MouseDownEvent, window, cx| {
+                        indentation_menu(hard_tabs, width).show(event.position, window, cx)
+                    }),
+                ));
+            }
         }
         if let Some(lsp) = &self.lsp {
             let lsp = lsp.read(cx);
@@ -3657,6 +3714,14 @@ impl Render for Workspace {
                         .as_ref()
                         .and_then(|n| me_syntax::language_by_name(n));
                     editor.update(cx, |e, cx| e.set_language(language, cx));
+                }
+            }))
+            .on_action(cx.listener(|this, action: &SetTableOption, _, cx| {
+                // Reached when the table isn't focused (its status bar menus).
+                if let Some(Preview::Table(table)) =
+                    this.active_tab().and_then(|t| t.preview.clone())
+                {
+                    table.update(cx, |t, cx| t.set_option(&action.option, cx));
                 }
             }))
             .on_action(cx.listener(|this, action: &SetIndentation, _, cx| {

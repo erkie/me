@@ -6,6 +6,7 @@
 mod actions;
 mod app_state;
 mod assets;
+mod csv;
 mod editor;
 mod file_icons;
 mod file_tree;
