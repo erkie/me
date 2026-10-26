@@ -3160,7 +3160,7 @@ impl Workspace {
                     }
                     Preview::Image(image) => image.read(cx).status(),
                 }));
-            } else {
+            } else if !editor.is_blank() {
                 let sels = editor.state.selections();
                 let primary = sels.primary();
                 let (line, col) = editor.state.doc.line_col(primary.head);

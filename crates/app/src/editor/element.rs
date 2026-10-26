@@ -379,6 +379,8 @@ pub struct PrepaintState {
     /// Underline of the Cmd-hovered word.
     link: Vec<PaintQuad>,
     link_hovered: bool,
+    /// Only the notice is drawn: no gutter, cursor, or current line.
+    blank: bool,
     /// Wavy underlines under problems: origin, width, color.
     squiggles: Vec<(Point<Pixels>, Pixels, Hsla)>,
     /// The hover popover, drawn on top of everything.
@@ -564,6 +566,7 @@ impl Element for EditorElement {
 
         let focused = self.view.read(cx).focus_handle.is_focused(window);
         let view = self.view.read(cx);
+        let blank = view.is_blank();
         let state = &view.state;
         let doc = &state.doc;
         let scroll = view.scroll;
@@ -659,7 +662,7 @@ impl Element for EditorElement {
             .map(|s| doc.char_to_line(s.head))
             .collect();
         for row in &rows {
-            if cursor_lines.binary_search(&row.line).is_ok() {
+            if !blank && cursor_lines.binary_search(&row.line).is_ok() {
                 backgrounds.push(fill(
                     Bounds::new(point(bounds.left(), row.top), size(full_width, line_height)),
                     palette.current_line,
@@ -785,7 +788,7 @@ impl Element for EditorElement {
 
         // Cursors.
         let mut cursors = Vec::new();
-        if focused && view.cursor_visible {
+        if focused && view.cursor_visible && !blank {
             for sel in state.selections().iter() {
                 let (line, col) = doc.line_col(sel.head);
                 if let Some(row) = snapshot.row_for(line, col) {
@@ -808,7 +811,7 @@ impl Element for EditorElement {
             .map(|s| doc.char_to_line(s.head))
             .collect();
         let mut gutter = Vec::with_capacity(snapshot.rows.len());
-        for row in snapshot.rows.iter().filter(|r| r.first) {
+        for row in snapshot.rows.iter().filter(|r| r.first && !blank) {
             let color = match problem_lines.get(&row.line) {
                 Some(&severity) if severity <= Severity::Warning => {
                     hover::severity_color(severity, &palette)
@@ -990,6 +993,7 @@ impl Element for EditorElement {
             cursors,
             link,
             link_hovered,
+            blank,
             squiggles,
             popover,
             scrollbar,
@@ -1015,7 +1019,9 @@ impl Element for EditorElement {
             ElementInputHandler::new(bounds, self.view.clone()),
             cx,
         );
-        let cursor = if prepaint.link_hovered {
+        let cursor = if prepaint.blank {
+            CursorStyle::Arrow
+        } else if prepaint.link_hovered {
             CursorStyle::PointingHand
         } else {
             CursorStyle::IBeam
