@@ -7,16 +7,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, HighlightStyle,
-    ImageSource, InteractiveElement, IntoElement, ParentElement, Render, SharedString, SharedUri,
+    App, AppContext, ClickEvent, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
+    Focusable, FontWeight, HighlightStyle, ImageSource, InteractiveElement, IntoElement, Modifiers,
+    MouseButton, MouseDownEvent, ParentElement, Pixels, Point, Render, SharedUri,
     StatefulInteractiveElement, StyleRefinement, Styled, Subscription, Task, Window, div, px,
     relative, rems,
 };
 use gpui_base::text::{CodeBlock, MarkdownExtensions};
-use gpui_base::{TextView, TextViewStyle};
+use gpui_base::{TextView, TextViewState, TextViewStyle};
 use me_syntax::{Syntax, language_by_name};
 use me_text::Rope;
 
+use crate::actions::{Copy, CopyPath, CopyRelativePath, RevealInFinder, SelectAll, TogglePreview};
 use crate::editor::{EditorEvent, EditorView};
 use crate::theme::Palette;
 use crate::{settings, theme};
@@ -34,7 +36,9 @@ pub enum MarkdownEvent {
 pub struct MarkdownPreview {
     focus_handle: FocusHandle,
     editor: Entity<EditorView>,
-    text: SharedString,
+    /// Owned rather than keyed so the context menu can read and change the
+    /// selection.
+    text: Entity<TextViewState>,
     revision: u64,
     refresh: Option<Task<()>>,
     /// Kept across frames: code blocks reuse their highlights only while the
@@ -70,8 +74,9 @@ impl MarkdownPreview {
         });
         let (text, revision) = {
             let e = editor.read(cx);
-            (SharedString::from(e.text()), e.revision())
+            (e.text(), e.revision())
         };
+        let text = cx.new(|cx| TextViewState::markdown(&text, cx));
         Self {
             focus_handle: cx.focus_handle(),
             editor,
@@ -94,12 +99,44 @@ impl MarkdownPreview {
                 let editor = this.editor.read(cx);
                 if editor.revision() != this.revision || editor.is_loading() {
                     this.revision = editor.revision();
-                    this.text = editor.text().into();
+                    let text = editor.text();
+                    this.text.update(cx, |state, cx| state.set_text(&text, cx));
                     cx.notify();
                 }
             })
             .ok();
         }));
+    }
+
+    /// Right click: Copy and Select All for the rendered text, plus the same
+    /// file items as the source editor.
+    fn context_menu(
+        &mut self,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.focus_handle.contains_focused(window, cx) {
+            window.focus(&self.focus_handle, cx);
+        }
+        let nothing_selected = self.selected_text(cx).is_empty();
+        let mut menu = gpui_component::native_menu::NativeMenu::new()
+            .menu_with_disabled("Copy", nothing_selected, Box::new(Copy))
+            .menu("Select All", Box::new(SelectAll))
+            .separator()
+            .menu("Show Source", Box::new(TogglePreview));
+        if self.editor.read(cx).path().is_some() {
+            menu = menu
+                .separator()
+                .menu(crate::platform::REVEAL_LABEL, Box::new(RevealInFinder))
+                .menu("Copy Path", Box::new(CopyPath))
+                .menu("Copy Relative Path", Box::new(CopyRelativePath));
+        }
+        menu.show(position, window, cx);
+    }
+
+    fn selected_text(&self, cx: &App) -> String {
+        self.text.read(cx).selected_text().trim().to_string()
     }
 
     fn resolve_link(&self, url: &str, cx: &App) -> Option<PathBuf> {
@@ -259,32 +296,60 @@ impl Render for MarkdownPreview {
             .and_then(Path::parent)
             .map(Path::to_path_buf);
         let this = cx.weak_entity();
-        let view = TextView::markdown(
-            SharedString::from(format!("markdown-{}", cx.entity_id())),
-            self.text.clone(),
-        )
-        .style(text_style(&palette, body))
-        .shared_code_block_highlighter(highlighter)
-        .markdown_extensions(markdown_extensions(&palette))
-        .image_source(image_source(base))
-        .selectable(true)
-        .on_link_click(move |url, _, window, cx| {
-            let url = url.clone();
-            let this = this.clone();
-            window.defer(cx, move |_, cx| {
-                let Some(this) = this.upgrade() else { return };
-                let path = this.read(cx).resolve_link(&url, cx);
-                match path {
-                    Some(path) => this.update(cx, |_, cx| cx.emit(MarkdownEvent::OpenPath(path))),
-                    None => cx.open_url(&url),
+        let view = TextView::new(&self.text)
+            .style(text_style(&palette, body))
+            .shared_code_block_highlighter(highlighter)
+            .markdown_extensions(markdown_extensions(&palette))
+            .image_source(image_source(base))
+            .selectable(true)
+            .on_link_click(move |url, event, window, cx| {
+                // A right click on a link shows the context menu instead.
+                if is_secondary_click(event) {
+                    return;
                 }
+                let url = url.clone();
+                let this = this.clone();
+                window.defer(cx, move |_, cx| {
+                    let Some(this) = this.upgrade() else { return };
+                    let path = this.read(cx).resolve_link(&url, cx);
+                    match path {
+                        Some(path) => {
+                            this.update(cx, |_, cx| cx.emit(MarkdownEvent::OpenPath(path)))
+                        }
+                        None => cx.open_url(&url),
+                    }
+                });
             });
-        });
 
         div()
             .id("markdown-scroll")
             .key_context("MarkdownPreview")
             .track_focus(&self.focus_handle)
+            .on_action(cx.listener(|this, _: &Copy, _, cx| {
+                let text = this.selected_text(cx);
+                if !text.is_empty() {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                }
+            }))
+            .on_action(cx.listener(|this, _: &SelectAll, _, cx| {
+                this.text.update(cx, |state, cx| state.select_all(cx));
+            }))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                    this.context_menu(event.position, window, cx);
+                    cx.stop_propagation();
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                    if is_control_click(event.modifiers) {
+                        this.context_menu(event.position, window, cx);
+                        cx.stop_propagation();
+                    }
+                }),
+            )
             .size_full()
             .overflow_y_scroll()
             .bg(palette.editor_bg)
@@ -304,4 +369,13 @@ impl Render for MarkdownPreview {
                 ),
             )
     }
+}
+
+/// Control-click is a right click on macOS.
+fn is_control_click(modifiers: Modifiers) -> bool {
+    cfg!(target_os = "macos") && modifiers.control
+}
+
+fn is_secondary_click(event: &ClickEvent) -> bool {
+    event.is_right_click() || (!event.is_middle_click() && is_control_click(event.modifiers()))
 }
