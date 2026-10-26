@@ -56,12 +56,16 @@ security find-identity -v -p codesigning
 2. Generate a key with **Developer** access.
 3. Download `AuthKey_XXXXXXXXXX.p8`. You can only download it once.
 4. Note the Key ID and the Issuer ID shown on that page.
-5. Store the key in the keychain as a notarytool profile, then delete
-   the file:
+5. Store the key in the login keychain as a notarytool profile, then
+   delete the file. Without `--keychain`, notarytool may try the
+   "Local Items" keychain and fail with "User interaction is not
+   allowed"; the script finds the profile in the login keychain without
+   being told where it is.
 
 ```sh
 xcrun notarytool store-credentials me-notary \
-  --key ~/Downloads/AuthKey_XXXXXXXXXX.p8 --key-id XXXXXXXXXX --issuer <issuer id>
+  --key ~/Downloads/AuthKey_XXXXXXXXXX.p8 --key-id XXXXXXXXXX --issuer <issuer id> \
+  --keychain ~/Library/Keychains/login.keychain-db
 rm ~/Downloads/AuthKey_XXXXXXXXXX.p8
 ```
 
