@@ -139,6 +139,8 @@ log; the Mac also shows a notification when a run fails.
 - **It signs whatever CI built from master**, like any signing setup
   would. Keep master protected.
 - **It never runs the builds**; it only signs them.
+- **Only the Mac build is signed.** The Linux and Windows files in the
+  same release stay as CI built them; the script doesn't touch them.
 - **The token can only change this repository's contents and
   releases.** When it expires, the log shows HTTP 401. Make a new one and
   store it with

@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# make-ico <1024px png> <output.ico>  (macOS: uses sips; the sizes Windows
+# asks for, each stored as PNG, which Windows Vista and later read)
+set -euo pipefail
+src=$1
+out=$2
+dir=$(mktemp -d)
+sizes="16 20 24 32 40 48 64 96 128 256"
+for size in $sizes; do
+  sips -z "$size" "$size" "$src" --out "$dir/$size.png" >/dev/null
+done
+python3 - "$out" "$dir" $sizes <<'EOF'
+import struct, sys
+out, dir, sizes = sys.argv[1], sys.argv[2], [int(s) for s in sys.argv[3:]]
+images = [open("{}/{}.png".format(dir, s), "rb").read() for s in sizes]
+header = struct.pack("<HHH", 0, 1, len(images))
+offset = len(header) + 16 * len(images)
+entries = b""
+for size, data in zip(sizes, images):
+    # Width and height 0 mean 256.
+    entries += struct.pack("<BBBBHHII", size % 256, size % 256, 0, 0, 1, 32, len(data), offset)
+    offset += len(data)
+with open(out, "wb") as f:
+    f.write(header + entries + b"".join(images))
+EOF

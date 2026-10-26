@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Builds dist/Me-windows-<arch>.zip (release): a Me folder with me-app.exe
+# (the app) and me.exe (the CLI). Runs in Git Bash.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+# The same build number and commit as script/bundle-macos, for About Me.
+build=$(git rev-list --count HEAD 2>/dev/null || echo 1)
+commit=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
+export ME_BUILD=$build ME_COMMIT=$commit
+
+cargo build --release -p me-app -p me-cli
+out=${CARGO_TARGET_DIR:-target}/release
+arch=$(rustc -vV | sed -n 's/^host: \([^-]*\)-.*/\1/p')
+
+rm -rf dist/Me "dist/Me-windows-$arch.zip"
+mkdir -p dist/Me
+cp "$out/me-app.exe" "$out/me.exe" LICENSE dist/Me/
+# Windows' own tar (not Git Bash's) writes zips, with the forward slashes
+# the format wants; Compress-Archive writes backslashes.
+"$(cygpath -u "$SYSTEMROOT")/System32/tar.exe" -a -c -f "dist/Me-windows-$arch.zip" -C dist Me
+rm -rf dist/Me
+echo "Built dist/Me-windows-$arch.zip (build $build)"

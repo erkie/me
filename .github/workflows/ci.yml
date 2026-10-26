@@ -20,10 +20,13 @@ env:
 
 jobs:
   linux:
-    name: Linux (build + test)
+    name: Linux (test + tarball)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The whole history: the build number is the commit count.
+          fetch-depth: 0
       - name: Install GPUI dependencies
         run: |
           sudo apt-get update
@@ -34,6 +37,32 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo build --workspace --locked
       - run: cargo test --workspace --locked
+      # The publish job attaches it to the release.
+      - run: script/package-linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Me-linux-x86_64
+          retention-days: 7
+          path: dist/Me-linux-x86_64.tar.gz
+
+  windows:
+    name: Windows (test + zip)
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Every crate's failures at once: most tests are written on Unix.
+      - run: cargo test --workspace --locked --no-fail-fast
+      - run: script/package-windows
+        shell: bash
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Me-windows-x86_64
+          retention-days: 7
+          path: dist/Me-windows-x86_64.zip
 
   # The macOS 26 app icon (light, dark, clear and tinted). Xcode 26 only
   # compiles Icon Composer files on macOS 26, so it's done here and the Mac
@@ -70,19 +99,17 @@ jobs:
       - run: test -s dist/Me.app/Contents/Resources/Assets.car
 
   # Every push to master that passes the tests becomes a build: a universal
-  # Me.app uploaded as an artifact and published as the GitHub release
-  # build-<n> (n = commit count), which the app updates itself from.
-  #
-  # No signing keys here. With the repository variable SIGNED_RELEASES set
-  # to true, the release is a draft: a Mac outside GitHub signs, notarizes
-  # and publishes it (script/sign-release, docs/SIGNING.md).
+  # Me.app, built here, and the Linux and Windows builds from their jobs,
+  # published together as the GitHub release build-<n> (n = commit count).
+  # The Mac app updates itself from these releases.
   release:
     name: Release (Me.app, universal)
     needs: [linux, macos, app-icon]
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     runs-on: macos-15
-    permissions:
-      contents: write
+    outputs:
+      build: ${{ steps.package.outputs.build }}
+      version: ${{ steps.package.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -110,21 +137,40 @@ jobs:
           shasum -a 256 dist/Me-macos.zip | cut -d' ' -f1 > dist/Me-macos.zip.sha256
           echo "build=$build" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-      # The release keeps the build; the artifact is a short-lived copy, and
-      # a full artifact storage quota mustn't stop the release.
       - uses: actions/upload-artifact@v4
-        continue-on-error: true
         with:
           name: Me-macos-build-${{ steps.package.outputs.build }}
           retention-days: 7
           path: |
             dist/Me-macos.zip
             dist/Me-macos.zip.sha256
+
+  # No signing keys here. With the repository variable SIGNED_RELEASES set
+  # to true, the release is a draft: a Mac outside GitHub signs, notarizes
+  # and publishes it (script/sign-release, docs/SIGNING.md). The Linux and
+  # Windows builds aren't signed.
+  publish:
+    name: Publish release
+    needs: [release, linux, windows]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The notes list the commits since the last build's tag.
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: Me-*
+          merge-multiple: true
+          path: dist
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-          BUILD: ${{ steps.package.outputs.build }}
-          VERSION: ${{ steps.package.outputs.version }}
+          BUILD: ${{ needs.release.outputs.build }}
+          VERSION: ${{ needs.release.outputs.version }}
           SIGNED_RELEASES: ${{ vars.SIGNED_RELEASES }}
         run: |
           previous=$(git describe --tags --match 'build-*' --abbrev=0 HEAD^ 2>/dev/null || true)
@@ -143,6 +189,7 @@ jobs:
           # A re-run replaces its own release.
           gh release delete "build-$BUILD" --cleanup-tag --yes 2>/dev/null || true
           gh release create "build-$BUILD" dist/Me-macos.zip dist/Me-macos.zip.sha256 \
+            dist/Me-linux-x86_64.tar.gz dist/Me-windows-x86_64.zip \
             --target "$GITHUB_SHA" --title "Me $VERSION (build $BUILD)" \
             --notes-file notes.md "$publish"
           # Keep the newest 20 builds.

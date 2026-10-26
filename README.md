@@ -106,11 +106,35 @@ To use it for git commit messages and other `$EDITOR` prompts:
 export EDITOR="me -w"
 ```
 
+## Install (Linux)
+
+Download `Me-linux-x86_64.tar.gz` from the [latest release](https://github.com/erkie/me/releases/latest)
+and unpack it into `/usr/local`. That puts `me-app`, the `me` command, the
+desktop entry and the icon in place:
+
+```sh
+sudo tar -xzf Me-linux-x86_64.tar.gz -C /usr/local
+```
+
+Or unpack it into `~/.local` without `sudo`, if `~/.local/bin` is on your
+`PATH`. It needs glibc 2.39 or later (Ubuntu 24.04, Debian 13, Fedora 40
+or newer). To update, unpack a newer build the same way. Or build it
+yourself with `script/package-linux`.
+
+## Install (Windows)
+
+Download `Me-windows-x86_64.zip` from the [latest release](https://github.com/erkie/me/releases/latest),
+unzip it and run `Me\me-app.exe`. The Windows build isn't signed, so the
+first time, SmartScreen says Windows protected your PC: click **More
+info**, then **Run anyway**. `me.exe`, next to it, is the `me` command; add
+the folder to your `PATH` to use it in a terminal. On Windows each `me`
+starts another copy of Me for now, and `me -w` doesn't wait.
+
 ## Updates
 
-Every push to master that passes CI becomes a build: the `release` job
-builds a universal Me.app (Apple silicon and Intel), uploads it as an
-artifact, and publishes it as the GitHub release `build-<n>`, where n is
+Every push to master that passes CI becomes a build: CI builds a
+universal Me.app (Apple silicon and Intel), a Linux tarball and a Windows
+zip, and publishes them as the GitHub release `build-<n>`, where n is
 master's commit count, with the commits since the last build as notes.
 
 GitHub never holds a signing key. Builds are signed with a Developer ID
@@ -130,7 +154,9 @@ Checking needs no account. If you're signed in to the GitHub CLI, or have
 `GH_TOKEN`/`GITHUB_TOKEN` or `"github_token"` in `settings.json`, Me sends
 that token along (GitHub allows more requests with one; a fork that's
 private needs it). Set `"auto_update": false` in `settings.json` to turn
-updates off. Development builds (`cargo run`) never update.
+updates off. Development builds (`cargo run`) never update. Neither do
+the Linux and Windows builds yet: download a newer one from the
+[releases page](https://github.com/erkie/me/releases).
 
 ## Usage
 
@@ -169,8 +195,8 @@ starting) go to definition uses the built-in index, completions come
 from the words in the file, and `F2` edits every occurrence of the word in
 the file instead of renaming across files. To pick another server or turn
 one off, edit `settings.json` (`~/Library/Application Support/Me` on
-macOS, `~/.config/me` elsewhere); `"suggest_on_type": false` keeps the
-completion list to `⌃Space`:
+macOS, `~/.config/me` on Linux, `%APPDATA%\me` on Windows);
+`"suggest_on_type": false` keeps the completion list to `⌃Space`:
 
 ```json
 {
@@ -197,8 +223,8 @@ ME_TRACE_STARTUP=1 cargo run --release -p me-app   # print startup timings
 Linux needs the GPUI system libraries:
 `libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libfontconfig1-dev libfreetype-dev libx11-xcb-dev libvulkan1`.
 
-CI runs on pushes to master and on pull requests, on GitHub's Linux and
-macOS machines.
+CI runs on pushes to master and on pull requests, on GitHub's Linux, macOS
+and Windows machines.
 
 | Crate | What it is |
 |-------|------------|
@@ -210,7 +236,8 @@ macOS machines.
 | `crates/app` | The GPUI app. |
 
 Settings (`font_size`, `word_wrap`) and window sessions live in
-`~/Library/Application Support/Me` (`~/.config/me` on Linux).
+`~/Library/Application Support/Me` (`~/.config/me` on Linux, `%APPDATA%\me`
+on Windows).
 
 Mermaid diagrams are rendered by [merman](https://github.com/Latias94/merman),
 a Rust port of Mermaid.

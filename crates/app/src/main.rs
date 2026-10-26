@@ -1,5 +1,8 @@
 //! Me: a fast, native editor for reading markdown and code.
 
+// Release builds on Windows open no console window next to the app.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod actions;
 mod app_state;
 mod assets;

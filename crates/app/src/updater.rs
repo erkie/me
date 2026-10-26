@@ -311,6 +311,12 @@ fn unavailable(cx: &App) -> Option<String> {
     if current_build().is_none() {
         return Some("This is a development build; it doesn't update itself.".into());
     }
+    if !cfg!(target_os = "macos") {
+        return Some(format!(
+            "Me updates itself on macOS only. Newer builds are at {}/releases.",
+            env!("CARGO_PKG_REPOSITORY")
+        ));
+    }
     let Some(bundle) = bundle() else {
         return Some("Me isn't running from an app bundle, so it can't replace itself.".into());
     };

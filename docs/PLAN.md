@@ -479,10 +479,14 @@ when idle; the editor's own footprint doesn't change.
 
 ### Phase 4: Linux and Windows
 
+Every build already includes `Me-linux-x86_64.tar.gz` and
+`Me-windows-x86_64.zip`, built by CI from the same commit as the Mac app.
+Neither is signed or updates itself yet. Still to do:
+
 * Linux: Wayland and X11 testing, `.desktop` file, AppImage and `.deb`,
   portal file dialogs, Freedesktop dark-mode signal.
-* Windows: named-pipe IPC, MSI/MSIX installer with "Open with" entries,
-  Mica backdrop for the sidebar.
+* Windows: named-pipe IPC (one instance, `me -w`), MSI/MSIX installer
+  with "Open with" entries, code signing, Mica backdrop for the sidebar.
 
 ---
 

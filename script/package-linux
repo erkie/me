@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Builds dist/Me-linux-<arch>.tar.gz (release): `me` and `me-app` in bin/,
+# the desktop entry and the icon in share/, so it unpacks into a prefix:
+#
+#   sudo tar -xzf Me-linux-x86_64.tar.gz -C /usr/local
+#   tar -xzf Me-linux-x86_64.tar.gz -C ~/.local
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+# The same build number and commit as script/bundle-macos, for About Me.
+build=$(git rev-list --count HEAD 2>/dev/null || echo 1)
+commit=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
+export ME_BUILD=$build ME_COMMIT=$commit
+
+cargo build --release -p me-app -p me-cli
+out=${CARGO_TARGET_DIR:-target}/release
+arch=$(rustc -vV | sed -n 's/^host: \([^-]*\)-.*/\1/p')
+
+stage=$(mktemp -d)
+install -Dm755 "$out/me-app" "$stage/bin/me-app"
+install -Dm755 "$out/me" "$stage/bin/me"
+install -Dm644 packaging/linux/me.desktop "$stage/share/applications/me.desktop"
+install -Dm644 LICENSE "$stage/share/doc/me/LICENSE"
+for size in 256 512; do
+  install -Dm644 "assets/logo/app-icon-$size.png" "$stage/share/icons/hicolor/${size}x$size/apps/me.png"
+done
+
+# Only files, owned by root: unpacking into /usr/local creates the folders
+# it lacks and leaves the ones it has alone.
+mkdir -p dist
+tar -czf "dist/Me-linux-$arch.tar.gz" -C "$stage" --owner=0 --group=0 --numeric-owner \
+  $(cd "$stage" && find bin share -type f | sort)
+echo "Built dist/Me-linux-$arch.tar.gz (build $build)"

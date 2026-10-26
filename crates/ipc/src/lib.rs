@@ -329,8 +329,13 @@ mod tests {
         );
         let p = parse_path_arg("weird:12", cwd);
         assert_eq!((p.path, p.line), (cwd.join("weird:12"), None));
-        let p = parse_path_arg("/abs/x.txt", cwd);
-        assert_eq!(p.path, PathBuf::from("/abs/x.txt"));
+        let abs = if cfg!(windows) {
+            r"C:\abs\x.txt"
+        } else {
+            "/abs/x.txt"
+        };
+        let p = parse_path_arg(abs, cwd);
+        assert_eq!(p.path, PathBuf::from(abs));
         let p = parse_path_arg(".", cwd);
         assert_eq!(p.path, cwd.to_path_buf());
     }

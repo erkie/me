@@ -81,7 +81,7 @@ fn cli_binary() -> Option<PathBuf> {
     if bundled.exists() {
         return Some(bundled);
     }
-    let sibling = exe.with_file_name("me");
+    let sibling = exe.with_file_name(format!("me{}", std::env::consts::EXE_SUFFIX));
     sibling.exists().then_some(sibling)
 }
 
@@ -101,6 +101,17 @@ pub fn install_cli(cx: &mut App) {
     }
 }
 
+/// Windows has no folder on everyone's PATH to put it in.
+#[cfg(windows)]
+fn install_cli_at(cli: &std::path::Path) -> Result<PathBuf, String> {
+    let dir = cli.parent().unwrap_or(cli);
+    Err(format!(
+        "me.exe is in {}. Add that folder to your PATH to use `me` in a terminal.",
+        dir.display()
+    ))
+}
+
+#[cfg(not(windows))]
 fn install_cli_at(cli: &std::path::Path) -> Result<PathBuf, String> {
     let system = PathBuf::from("/usr/local/bin/me");
     let link = |dest: &std::path::Path| -> std::io::Result<()> {
