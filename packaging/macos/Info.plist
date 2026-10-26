@@ -23,7 +23,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>LSMinimumSystemVersion</key>
-	<string>12.0</string>
+	<string>11.0</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.developer-tools</string>
 	<key>NSHighResolutionCapable</key>
@@ -44,7 +44,7 @@
 			<key>CFBundleTypeName</key>
 			<string>Markdown Document</string>
 			<key>CFBundleTypeRole</key>
-			<string>Me</string>
+			<string>Editor</string>
 			<key>LSHandlerRank</key>
 			<string>Alternate</string>
 			<key>LSItemContentTypes</key>
@@ -56,7 +56,7 @@
 			<key>CFBundleTypeName</key>
 			<string>Source Code</string>
 			<key>CFBundleTypeRole</key>
-			<string>Me</string>
+			<string>Editor</string>
 			<key>LSHandlerRank</key>
 			<string>Alternate</string>
 			<key>LSItemContentTypes</key>
@@ -82,7 +82,7 @@
 			<key>CFBundleTypeName</key>
 			<string>Text Document</string>
 			<key>CFBundleTypeRole</key>
-			<string>Me</string>
+			<string>Editor</string>
 			<key>LSHandlerRank</key>
 			<string>Alternate</string>
 			<key>LSItemContentTypes</key>

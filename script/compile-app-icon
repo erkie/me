@@ -39,7 +39,7 @@ for dev in $(candidates); do
   if DEVELOPER_DIR=$dev xcrun actool assets/logo/AppIcon.icon --compile "$out" \
       --app-icon AppIcon --enable-on-demand-resources NO --development-region en \
       --target-device mac --platform macosx --include-all-app-icons \
-      --minimum-deployment-target 12.0 --standalone-icon-behavior all \
+      --minimum-deployment-target 11.0 --standalone-icon-behavior all \
       --output-partial-info-plist "$out/partial.plist" >"$out/actool.log" 2>&1 &&
     [ -s "$out/Assets.car" ]; then
     echo "Compiled $out/Assets.car; appearances in it:" >&2

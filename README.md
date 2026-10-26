@@ -64,9 +64,10 @@ code. The plan and the reasoning behind the technology choice are in
 ## Install (macOS)
 
 Download `Me-macos.zip` from the [latest release](https://github.com/erkie/me/releases/latest),
-unzip it and move Me.app to /Applications. It isn't notarized, so open it
-the first time with right-click → Open. From then on it updates itself (see
-[Updates](#updates)). Or build it yourself:
+unzip it and move Me.app to /Applications. It needs macOS 11 (Big Sur) or
+later, runs natively on Intel and Apple silicon, and is signed and
+notarized, so it opens with a double-click. From then on it updates itself
+(see [Updates](#updates)). Or build it yourself:
 
 ```sh
 script/bundle-macos --install      # builds dist/Me.app, copies it to /Applications, links `me`
@@ -90,9 +91,9 @@ master's commit count, with the commits since the last build as notes.
 
 GitHub never holds a signing key. Builds are signed with a Developer ID
 and notarized by a Mac outside GitHub, which takes each draft release,
-signs it and publishes it ([docs/SIGNING.md](docs/SIGNING.md)). Until
-that Mac is set up, builds are signed ad hoc: right-click → Open the
-first time.
+signs it and publishes it ([docs/SIGNING.md](docs/SIGNING.md)), a few
+minutes after CI. Builds before build 31 are signed ad hoc: right-click
+→ Open the first time.
 
 Me checks for a newer build half a minute after launch and every six
 hours, downloads it in the background and checks it (size, SHA-256, bundle

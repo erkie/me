@@ -278,8 +278,8 @@ The directory is created with mode 0700.
   `net.daringfireball.markdown`, `public.json`, `public.xml`, `public.yaml`,
   `public.shell-script`, and similar, with rank `Alternate`, so we never take
   over silently. The **Me → Make Me the Default Editor…** command calls
-  `NSWorkspace.setDefaultApplication(at:toOpenContentType:)` (macOS 12+) for
-  each type. macOS shows its own confirmation. Opening files from Finder
+  `LSSetDefaultRoleHandlerForContentType` for each type, which works on
+  every macOS Me runs on (11 and later). Opening files from Finder
   arrives through `application:openURLs:`, which GPUI exposes as `on_open_urls`.
 * **CLI install.** **Me → Install 'me' Command** symlinks
   `/usr/local/bin/me` → `Me.app/Contents/Resources/bin/me`,
