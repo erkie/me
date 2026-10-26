@@ -7,6 +7,13 @@ markdown** and **looking things up in code**. It starts in about 0.1 s, uses
 tens of megabytes instead of gigabytes, opens huge files, and follows the
 system's light/dark mode. It has no AI features.
 
+I rarely write code by hand anymore. What I still open an editor for is
+reading, with a little editing: markdown docs and notes, finding a file,
+following code from a call to where it's defined. An editor that weighs
+gigabytes, with AI in every menu and a setting for everything, spends
+memory and attention on what I no longer use. Me is built for what's left,
+and nothing else.
+
 It is written in Rust on [GPUI](https://gpui.rs), the GPU-accelerated UI
 framework behind Zed. macOS comes first; Linux and Windows run from the same
 code. The plan and the reasoning behind the technology choice are in
