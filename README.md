@@ -12,6 +12,23 @@ framework behind Zed. macOS comes first; Linux and Windows run from the same
 code. The plan and the reasoning behind the technology choice are in
 [`docs/PLAN.md`](docs/PLAN.md).
 
+## Screenshots
+
+Markdown opens rendered:
+
+<picture><source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/markdown-dark.png"><img src="assets/screenshots/markdown-light.png" alt="README.md rendered in Me, with the file tree on the left"></picture>
+
+`⌘K` finds any command and shows its shortcut:
+
+<picture><source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/palette-dark.png"><img src="assets/screenshots/palette-light.png" alt="The command palette open over a Rust file"></picture>
+
+`⇧⌘F` searches the whole project, with results streaming in:
+
+<picture><source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/search-dark.png"><img src="assets/screenshots/search-light.png" alt="Project search results for SearchQuery beside the matching file"></picture>
+
+These were taken on Linux, so shortcuts show as Ctrl and the window has
+no macOS title bar.
+
 ## Features
 
 - File tree sidebar (lazy, respects `.gitignore`, dims ignored files) with
