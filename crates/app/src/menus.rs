@@ -8,6 +8,7 @@ use me_ipc::OpenPath;
 use crate::actions::*;
 use crate::app_state;
 use crate::platform;
+use crate::recent;
 use crate::settings;
 
 pub fn init(cx: &mut App) {
@@ -20,6 +21,8 @@ pub fn init(cx: &mut App) {
     });
     cx.on_action(|_: &Open, cx| prompt_open(true, cx));
     cx.on_action(|_: &OpenFolder, cx| prompt_open(false, cx));
+    cx.on_action(|action: &OpenRecent, cx| open_recent(&action.path, cx));
+    cx.on_action(|_: &ClearRecentlyOpened, cx| recent::clear(cx));
     cx.on_action(|_: &CloseWindow, cx| {
         if let Some(window) = cx.active_window() {
             window
@@ -89,6 +92,49 @@ fn prompt_open(files: bool, cx: &mut App) {
     .detach();
 }
 
+fn open_recent(path: &std::path::Path, cx: &mut App) {
+    if !path.exists() {
+        // Moved or deleted since: drop it rather than open an empty tab.
+        recent::forget(path, cx);
+        return;
+    }
+    let path = OpenPath {
+        path: path.to_path_buf(),
+        line: None,
+        column: None,
+    };
+    app_state::open(vec![path], None, false, cx);
+}
+
+/// Rebuilds the menu bar, for menus whose items change (Recently Opened).
+pub fn refresh(cx: &mut App) {
+    set_menus(cx);
+}
+
+fn recent_menu(cx: &App) -> Menu {
+    let paths = recent::paths(cx);
+    let mut items: Vec<MenuItem> = paths
+        .iter()
+        .map(|path| MenuItem::action(recent::label(path), OpenRecent { path: path.clone() }))
+        .collect();
+    if items.is_empty() {
+        items.push(
+            MenuItem::action(
+                "No Recent Items",
+                OpenRecent {
+                    path: PathBuf::new(),
+                },
+            )
+            .disabled(true),
+        );
+    }
+    items.push(MenuItem::separator());
+    items.push(
+        MenuItem::action("Clear Recently Opened", ClearRecentlyOpened).disabled(paths.is_empty()),
+    );
+    Menu::new("Recently Opened").items(items)
+}
+
 fn set_menus(cx: &mut App) {
     cx.set_menus([
         Menu::new("Me").items([
@@ -112,6 +158,7 @@ fn set_menus(cx: &mut App) {
             MenuItem::separator(),
             MenuItem::action("Open…", Open),
             MenuItem::action("Open Folder…", OpenFolder),
+            MenuItem::submenu(recent_menu(cx)),
             MenuItem::action("Go to File…", ToggleFileFinder),
             MenuItem::action("Reopen Closed Tab", ReopenClosedTab),
             MenuItem::separator(),

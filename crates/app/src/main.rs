@@ -22,6 +22,7 @@ mod paint;
 mod palette;
 mod picker;
 mod platform;
+mod recent;
 mod rename;
 mod search_panel;
 mod session;
@@ -139,6 +140,7 @@ fn main() {
         actions::bind_keys(cx);
         file_tree::bind_keys(cx);
         app_state::init(cx);
+        recent::init(cx);
         menus::init(cx);
         updater::init(cx);
 
