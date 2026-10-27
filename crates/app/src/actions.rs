@@ -392,6 +392,27 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-shift-s", SaveAs, image),
         KeyBinding::new("escape", Cancel, image),
     ]);
+    // Moving between cells of a CSV table.
+    let table = Some("CsvTable");
+    cx.bind_keys([
+        KeyBinding::new("left", MoveLeft, table),
+        KeyBinding::new("right", MoveRight, table),
+        KeyBinding::new("up", MoveUp, table),
+        KeyBinding::new("down", MoveDown, table),
+        KeyBinding::new("tab", Tab, table),
+        KeyBinding::new("shift-tab", Outdent, table),
+        KeyBinding::new("home", MoveLineStart, table),
+        KeyBinding::new("end", MoveLineEnd, table),
+        KeyBinding::new("secondary-left", MoveLineStart, table),
+        KeyBinding::new("secondary-right", MoveLineEnd, table),
+        KeyBinding::new("secondary-up", MoveDocStart, table),
+        KeyBinding::new("secondary-down", MoveDocEnd, table),
+        KeyBinding::new("secondary-home", MoveDocStart, table),
+        KeyBinding::new("secondary-end", MoveDocEnd, table),
+        KeyBinding::new("pageup", PageUp, table),
+        KeyBinding::new("pagedown", PageDown, table),
+        KeyBinding::new("secondary-c", Copy, table),
+    ]);
     #[cfg(target_os = "macos")]
     cx.bind_keys([
         KeyBinding::new("cmd-left", MoveLineStart, editor),

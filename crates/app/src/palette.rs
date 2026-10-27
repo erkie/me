@@ -92,7 +92,7 @@ fn commands(cx: &App) -> Vec<(String, Box<dyn Action>)> {
         (word_wrap.into(), Box::new(ToggleWordWrap)),
         ("View: Toggle Sidebar".into(), Box::new(ToggleSidebar)),
         (
-            "View: Toggle Markdown Preview".into(),
+            "View: Toggle Preview (Markdown, Table)".into(),
             Box::new(TogglePreview),
         ),
         ("View: Bigger Text".into(), Box::new(IncreaseFontSize)),
