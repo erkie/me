@@ -1011,6 +1011,22 @@ impl EditorView {
         self.loading
     }
 
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    pub fn undo(&mut self, cx: &mut Context<Self>) {
+        self.edit(cx, |s| {
+            s.undo();
+        });
+    }
+
+    pub fn redo(&mut self, cx: &mut Context<Self>) {
+        self.edit(cx, |s| {
+            s.redo();
+        });
+    }
+
     /// Opened with replacement characters: the file isn't valid UTF-8.
     pub fn is_lossy(&self) -> bool {
         self.lossy

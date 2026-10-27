@@ -5,7 +5,9 @@
 //! records are indexed in the background, so a file of millions of rows
 //! scrolls as smoothly as a small one.
 
+mod edit;
 mod parse;
+mod selection;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,10 +15,10 @@ use std::time::{Duration, Instant};
 
 use encoding_rs::Encoding;
 use gpui::{
-    App, Bounds, ClipboardItem, Context, CursorStyle, DispatchPhase, Element, ElementId, Entity,
-    FocusHandle, Focusable, FontWeight, GlobalElementId, Hitbox, HitboxBehavior,
-    InspectorElementId, InteractiveElement, IntoElement, LayoutId, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement, Pixels, Point, Render,
+    AnyElement, App, Bounds, ClipboardItem, Context, CursorStyle, DispatchPhase, Element,
+    ElementId, Entity, FocusHandle, Focusable, FontWeight, GlobalElementId, Hitbox, HitboxBehavior,
+    InspectorElementId, InteractiveElement, IntoElement, KeyDownEvent, LayoutId, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement, Pixels, Point, Render,
     ScrollWheelEvent, ShapedLine, SharedString, Style, Styled, Subscription, Task, TextAlign,
     TextRun, Window, div, fill, font, point, px, relative, size,
 };
@@ -24,14 +26,18 @@ use me_text::Rope;
 use unicode_width::UnicodeWidthChar;
 
 use crate::actions::{
-    Copy, CopyPath, CopyRelativePath, MoveDocEnd, MoveDocStart, MoveDown, MoveLeft, MoveLineEnd,
-    MoveLineStart, MoveRight, MoveUp, Outdent, PageDown, PageUp, RevealInFinder, Tab,
-    TogglePreview,
+    Backspace, Cancel, Copy, CopyPath, CopyRelativePath, Delete, MoveDocEnd, MoveDocStart,
+    MoveDown, MoveLeft, MoveLineEnd, MoveLineStart, MoveRight, MoveUp, Newline, Outdent, PageDown,
+    PageUp, Redo, RevealInFinder, Save, SaveAs, SelectAll, SelectDocEnd, SelectDocStart,
+    SelectDown, SelectLeft, SelectLineEnd, SelectLineStart, SelectPageDown, SelectPageUp,
+    SelectRight, SelectUp, Tab, TogglePreview, Undo,
 };
 use crate::editor::{EditorEvent, EditorView};
 use crate::{settings, theme};
+use edit::Editing;
 pub use parse::is_table;
 use parse::{Dialect, Index};
+use selection::{Selection, Span, tsv_field};
 
 /// Re-index at most this often while the source changes.
 const REFRESH_DELAY: Duration = Duration::from_millis(120);
@@ -44,6 +50,8 @@ const CELL_PAD: f32 = 8.;
 /// How close to a header edge a drag resizes the column.
 const RESIZE_GRAB: f32 = 4.;
 const SCROLLBAR_VISIBLE_FOR: Duration = Duration::from_millis(1200);
+/// How long a hint ("this file is read-only here") stays in the status bar.
+const HINT_FOR: Duration = Duration::from_secs(4);
 
 /// A choice from the table's menus. `None` means "detect it".
 #[derive(Clone, Debug, PartialEq)]
@@ -61,7 +69,7 @@ pub struct SetTableOption {
     pub option: TableOption,
 }
 
-gpui::actions!(table, [CopyRow]);
+gpui::actions!(table, [CopyRow, EditCell]);
 
 /// The encodings offered in the menu, by their WHATWG names.
 const ENCODINGS: &[&str] = &[
@@ -109,6 +117,8 @@ struct Columns {
 struct Layout {
     body: Bounds<Pixels>,
     header: Bounds<Pixels>,
+    /// The whole table's top left.
+    origin: Point<Pixels>,
     row_height: Pixels,
     /// Left edge of each column (and the end of the last), unscrolled.
     xs: Vec<Pixels>,
@@ -138,8 +148,11 @@ pub struct CsvPreview {
     /// In f64: a million rows down is past where f32 pixels are exact.
     scroll_y: f64,
     scrolled_at: Option<Instant>,
-    /// Data row and column of the selected cell.
-    selected: Option<(usize, usize)>,
+    selection: Option<Selection>,
+    /// What the mouse is selecting while its button is down.
+    dragging: Option<Span>,
+    editing: Option<Editing>,
+    hint: Option<(SharedString, Instant)>,
     widths: Vec<Option<Pixels>>,
     /// Column being resized: its index, the mouse x and its width at the start.
     resizing: Option<(usize, Pixels, Pixels)>,
@@ -185,7 +198,10 @@ impl CsvPreview {
             scroll_x: px(0.),
             scroll_y: 0.,
             scrolled_at: None,
-            selected: None,
+            selection: None,
+            dragging: None,
+            editing: None,
+            hint: None,
             widths: Vec::new(),
             resizing: None,
             layout: Layout::default(),
@@ -287,16 +303,25 @@ impl CsvPreview {
             cx.background_executor().timer(REFRESH_DELAY).await;
             this.update(cx, |this, cx| {
                 this.refresh = None;
-                let editor = this.editor.read(cx);
-                let (rope, revision) = (editor.state.doc.rope().clone(), editor.revision());
-                if let Some(source) = this.source.as_mut().filter(|s| s.revision != revision) {
-                    source.rope = rope;
-                    source.revision = revision;
-                    this.reindex(false, cx);
-                }
+                this.sync_with_editor(cx);
             })
             .ok();
         }));
+    }
+
+    /// Re-reads the editor's text if it changed.
+    fn sync_with_editor(&mut self, cx: &mut Context<Self>) {
+        let editor = self.editor.read(cx);
+        let (rope, revision) = (editor.state.doc.rope().clone(), editor.revision());
+        if let Some(source) = self
+            .source
+            .as_mut()
+            .filter(|s| s.from_editor && s.revision != revision)
+        {
+            source.rope = rope;
+            source.revision = revision;
+            self.reindex(false, cx);
+        }
     }
 
     /// Indexes the start of the source now and the rest in the background.
@@ -480,11 +505,6 @@ impl CsvPreview {
             .collect()
     }
 
-    fn cell(&mut self, row: usize, col: usize) -> Option<SharedString> {
-        let record = row + self.has_header() as usize;
-        self.records_range(record, 1).first()?.get(col).cloned()
-    }
-
     // ---------------------------------------------------------------------
     // Geometry
     // ---------------------------------------------------------------------
@@ -535,14 +555,7 @@ impl CsvPreview {
 
     fn clamp_selection(&mut self) {
         let (rows, columns) = (self.rows(), self.column_count());
-        if let Some((row, col)) = &mut self.selected {
-            if rows == 0 {
-                self.selected = None;
-            } else {
-                *row = (*row).min(rows - 1);
-                *col = (*col).min(columns - 1);
-            }
-        }
+        self.selection = self.selection.and_then(|s| s.clamped(rows, columns));
     }
 
     /// The data row and column under a window position in the body.
@@ -558,6 +571,24 @@ impl CsvPreview {
         (row < self.rows() && col < self.column_count()).then_some((row, col))
     }
 
+    /// The cell nearest a window position, wherever it is: for dragging past
+    /// the edges.
+    fn cell_near(&self, p: Point<Pixels>) -> Option<(usize, usize)> {
+        let l = &self.layout;
+        let (rows, cols) = (self.rows(), self.column_count());
+        if rows == 0 || l.row_height <= px(0.) {
+            return None;
+        }
+        let y = (f32::from(p.y - l.body.top()) as f64 + self.scroll_y).max(0.);
+        let x = (p.x - l.body.left() + self.scroll_x).max(px(0.));
+        let row = ((y / f32::from(l.row_height) as f64).floor() as usize).min(rows - 1);
+        let col =
+            l.xs.partition_point(|&left| left <= x)
+                .saturating_sub(1)
+                .min(cols - 1);
+        Some((row, col))
+    }
+
     /// The column whose right edge is under `p` in the header.
     fn edge_at(&self, p: Point<Pixels>) -> Option<usize> {
         let l = &self.layout;
@@ -570,14 +601,36 @@ impl CsvPreview {
             .position(|&right| (right - x).abs() <= px(RESIZE_GRAB))
     }
 
+    /// Selects one cell and scrolls to it.
     fn select(&mut self, row: usize, col: usize, cx: &mut Context<Self>) {
         let rows = self.rows();
         if rows == 0 {
             return;
         }
         let (row, col) = (row.min(rows - 1), col.min(self.column_count() - 1));
-        self.selected = Some((row, col));
-        // Scroll it into view.
+        self.selection = Some(Selection::cell(row, col));
+        self.reveal(row, col, cx);
+    }
+
+    /// Moves the selection's far corner (Shift, or a drag), keeping where
+    /// it started and what it spans.
+    fn extend(&mut self, row: usize, col: usize, cx: &mut Context<Self>) {
+        let rows = self.rows();
+        if rows == 0 {
+            return;
+        }
+        let (row, col) = (row.min(rows - 1), col.min(self.column_count() - 1));
+        let mut selection = self.selection.unwrap_or(Selection::cell(row, col));
+        if selection.span == Span::All {
+            selection.span = Span::Cells;
+        }
+        selection.head = (row, col);
+        self.selection = Some(selection);
+        self.reveal(row, col, cx);
+    }
+
+    /// Scrolls the cell into view.
+    fn reveal(&mut self, row: usize, col: usize, cx: &mut Context<Self>) {
         let l = &self.layout;
         if l.row_height > px(0.) {
             let row_height = f32::from(l.row_height) as f64;
@@ -601,11 +654,50 @@ impl CsvPreview {
         cx.notify();
     }
 
-    fn move_by(&mut self, rows: isize, cols: isize, cx: &mut Context<Self>) {
-        let (row, col) = self.selected.unwrap_or((0, 0));
-        let row = (row as isize + rows).max(0) as usize;
-        let col = (col as isize + cols).max(0) as usize;
-        self.select(row, col, cx);
+    /// Arrow keys: moves the active cell, or with `extend` (Shift) the
+    /// selection's far corner.
+    fn move_by(&mut self, rows: isize, cols: isize, extend: bool, cx: &mut Context<Self>) {
+        let (row, col) = match self.selection {
+            Some(s) if extend => s.head,
+            Some(s) => s.anchor,
+            None => (0, 0),
+        };
+        let row = row.saturating_add_signed(rows);
+        let col = col.saturating_add_signed(cols);
+        if extend {
+            self.extend(row, col, cx);
+        } else {
+            self.select(row, col, cx);
+        }
+    }
+
+    /// Home, End and friends: to the edge in one direction. `None` keeps
+    /// that coordinate.
+    fn jump(
+        &mut self,
+        row: Option<usize>,
+        col: Option<usize>,
+        extend: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let (r, c) = match self.selection {
+            Some(s) if extend => s.head,
+            Some(s) => s.anchor,
+            None => (0, 0),
+        };
+        let (row, col) = (row.unwrap_or(r), col.unwrap_or(c));
+        if extend {
+            self.extend(row, col, cx);
+        } else {
+            self.select(row, col, cx);
+        }
+    }
+
+    fn select_all(&mut self, cx: &mut Context<Self>) {
+        if self.rows() > 0 {
+            self.selection = Some(Selection::all(self.rows(), self.column_count()));
+            cx.notify();
+        }
     }
 
     fn page_rows(&self) -> isize {
@@ -616,31 +708,66 @@ impl CsvPreview {
         ((l.body.size.height / l.row_height).floor() as isize - 1).max(1)
     }
 
-    fn copy_selection(&mut self, cx: &mut Context<Self>) {
-        if let Some((row, col)) = self.selected
-            && let Some(text) = self.cell(row, col)
-        {
-            cx.write_to_clipboard(ClipboardItem::new_string(text.to_string()));
+    /// The selection as tab-separated text, which spreadsheets paste as
+    /// cells. Whole columns bring their header along. `full_rows` widens
+    /// it to every column (Copy Rows).
+    fn selection_text(&self, full_rows: bool) -> Option<String> {
+        let selection = self.selection?;
+        let (index, source) = (self.index.as_ref()?, self.source.as_ref()?);
+        let rows = selection.rows(self.rows());
+        let cols = if full_rows {
+            0..self.column_count()
+        } else {
+            selection.cols(self.column_count())
+        };
+        let header = self.has_header() as usize;
+        let with_header =
+            header == 1 && !full_rows && matches!(selection.span, Span::Columns | Span::All);
+        let first = rows.start + header - with_header as usize;
+        let count = rows.len() + with_header as usize;
+        let mut out = String::new();
+        index.each_record(
+            &source.rope,
+            self.dialect(),
+            first,
+            count,
+            usize::MAX,
+            |record| {
+                for (i, col) in cols.clone().enumerate() {
+                    if i > 0 {
+                        out.push('\t');
+                    }
+                    out.push_str(&tsv_field(record.get(col).map_or("", String::as_str)));
+                }
+                out.push('\n');
+            },
+        );
+        // One cell pastes as just its text.
+        if count == 1 && cols.len() == 1 {
+            out.pop();
+            if let Some(stripped) = self.single_value_unquoted(&out) {
+                out = stripped;
+            }
         }
+        Some(out)
     }
 
-    /// The selected row, tab separated, to paste into a spreadsheet.
-    fn copy_row(&mut self, cx: &mut Context<Self>) {
-        let Some((row, _)) = self.selected else {
-            return;
-        };
-        let record = row + self.has_header() as usize;
-        if let Some(fields) = self.records_range(record, 1).first() {
-            let line = fields
-                .iter()
-                .map(|f| f.as_ref())
-                .collect::<Vec<_>>()
-                .join("\t");
-            cx.write_to_clipboard(ClipboardItem::new_string(line));
+    /// A lone cell is copied as it is, not quoted for a spreadsheet.
+    fn single_value_unquoted(&self, quoted: &str) -> Option<String> {
+        let inner = quoted.strip_prefix('"')?.strip_suffix('"')?;
+        Some(inner.replace("\"\"", "\""))
+    }
+
+    fn copy_selection(&mut self, full_rows: bool, cx: &mut Context<Self>) {
+        if let Some(text) = self.selection_text(full_rows) {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
     }
 
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editing.is_some() {
+            self.commit_edit(0, 0, window, cx);
+        }
         window.focus(&self.focus_handle, cx);
         if let Some(col) = self.edge_at(event.position) {
             if event.click_count == 2 {
@@ -656,12 +783,56 @@ impl CsvPreview {
             self.resizing = Some((col, event.position.x, width));
             return;
         }
-        if let Some((row, col)) = self.cell_at(event.position) {
-            self.select(row, col, cx);
+        let l = &self.layout;
+        let p = event.position;
+        let shift = event.modifiers.shift;
+        let in_gutter = p.x < l.body.left() && p.x >= l.origin.x;
+        let in_header = p.y < l.body.top() && p.y >= l.origin.y;
+        let Some((row, col)) = self.cell_near(p) else {
+            return;
+        };
+        let span = match (in_gutter, in_header) {
+            (true, true) => {
+                self.select_all(cx);
+                return;
+            }
+            (true, false) => Span::Rows,
+            (false, true) => Span::Columns,
+            (false, false) => Span::Cells,
+        };
+        // Double-click a header name to rename the column.
+        if span == Span::Columns && event.click_count == 2 && self.has_header() {
+            self.edit_record(0, col, None, window, cx);
+            return;
         }
+        if span == Span::Cells && event.click_count == 2 {
+            self.select(row, col, cx);
+            self.edit_active(None, window, cx);
+            return;
+        }
+        let continues = shift && self.selection.is_some_and(|s| s.span == span);
+        if continues || (shift && span == Span::Cells) {
+            self.extend(row, col, cx);
+        } else {
+            let mut selection = Selection::cell(row, col);
+            selection.span = span;
+            if span == Span::Columns {
+                // The active cell stays in view.
+                let top = self.cell_near(self.layout.body.origin).map_or(0, |c| c.0);
+                selection.anchor.0 = top;
+                selection.head.0 = top;
+            }
+            self.selection = Some(selection);
+            cx.notify();
+        }
+        self.dragging = Some(span);
     }
 
     fn mouse_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+        if let Some(span) = self.dragging {
+            self.drag_to(event.position, span, cx);
+            return;
+        }
         let Some((col, start_x, start_width)) = self.resizing else {
             return;
         };
@@ -673,6 +844,51 @@ impl CsvPreview {
         cx.notify();
     }
 
+    /// Drag-selecting: the far corner follows the mouse, scrolling when it
+    /// leaves the table.
+    fn drag_to(&mut self, p: Point<Pixels>, span: Span, cx: &mut Context<Self>) {
+        let body = self.layout.body;
+        let past = |v: Pixels, lo: Pixels, hi: Pixels| {
+            if v < lo {
+                v - lo
+            } else if v > hi {
+                v - hi
+            } else {
+                px(0.)
+            }
+        };
+        let dx = if span == Span::Rows {
+            px(0.)
+        } else {
+            past(p.x, body.left(), body.right())
+        };
+        let dy = if span == Span::Columns {
+            px(0.)
+        } else {
+            past(p.y, body.top(), body.bottom())
+        };
+        if dx != px(0.) || dy != px(0.) {
+            self.scroll_x += dx;
+            self.scroll_y += f32::from(dy) as f64;
+            self.clamp_scroll();
+        }
+        let Some((row, col)) = self.cell_near(p) else {
+            return;
+        };
+        let Some(mut selection) = self.selection else {
+            return;
+        };
+        match span {
+            Span::Rows => selection.head.0 = row,
+            Span::Columns => selection.head.1 = col,
+            _ => selection.head = (row, col),
+        }
+        if self.selection != Some(selection) {
+            self.selection = Some(selection);
+            cx.notify();
+        }
+    }
+
     /// Right click: copying, flipping to source, and how the file is read.
     fn context_menu(
         &mut self,
@@ -681,14 +897,26 @@ impl CsvPreview {
         cx: &mut Context<Self>,
     ) {
         window.focus(&self.focus_handle, cx);
+        // Right-clicking outside the selection selects that cell first.
         if let Some((row, col)) = self.cell_at(event.position) {
-            self.selected = Some((row, col));
-            cx.notify();
+            let (rows, cols) = (self.rows(), self.column_count());
+            if !self
+                .selection
+                .is_some_and(|s| s.contains(row, col, rows, cols))
+            {
+                self.selection = Some(Selection::cell(row, col));
+                cx.notify();
+            }
         }
-        let nothing = self.selected.is_none();
+        let nothing = self.selection.is_none();
+        let read_only = !self.editable(cx);
         let mut menu = gpui_component::native_menu::NativeMenu::new()
-            .menu_with_disabled("Copy Cell", nothing, Box::new(Copy))
-            .menu_with_disabled("Copy Row", nothing, Box::new(CopyRow))
+            .menu_with_disabled("Copy", nothing, Box::new(Copy))
+            .menu_with_disabled("Copy Rows", nothing, Box::new(CopyRow))
+            .menu("Select All", Box::new(SelectAll))
+            .separator()
+            .menu_with_disabled("Edit Cell", nothing || read_only, Box::new(EditCell))
+            .menu_with_disabled("Clear Cells", nothing || read_only, Box::new(Delete))
             .separator();
         menu = self.options_menu(menu);
         menu = menu
@@ -815,10 +1043,19 @@ impl CsvPreview {
         if let Some(error) = &self.error {
             return error.clone();
         }
+        if let Some((hint, at)) = &self.hint
+            && at.elapsed() < HINT_FOR
+        {
+            return hint.clone();
+        }
         if self.index.is_none() {
             return "Reading…".into();
         }
         let rows = self.rows();
+        if let Some(sel) = self.selection.filter(|s| !s.is_single()) {
+            let (r, c) = (sel.rows(rows).len(), sel.cols(self.column_count()).len());
+            return format!("{} × {c} selected", thousands(r)).into();
+        }
         let more = if self.index_task.is_some() { "+" } else { "" };
         format!(
             "{}{more} {} × {} {}",
@@ -882,6 +1119,22 @@ fn thousands(n: usize) -> String {
     out
 }
 
+/// A 2px frame inside `bounds`.
+fn push_outline(quads: &mut Vec<PaintQuad>, bounds: Bounds<Pixels>, color: gpui::Hsla) {
+    let w = px(2.);
+    let (o, sz) = (bounds.origin, bounds.size);
+    quads.push(fill(Bounds::new(o, size(sz.width, w)), color));
+    quads.push(fill(
+        Bounds::new(point(o.x, o.y + sz.height - w), size(sz.width, w)),
+        color,
+    ));
+    quads.push(fill(Bounds::new(o, size(w, sz.height)), color));
+    quads.push(fill(
+        Bounds::new(point(o.x + sz.width - w, o.y), size(w, sz.height)),
+        color,
+    ));
+}
+
 fn display_width(text: &str) -> usize {
     text.chars().map(|c| c.width().unwrap_or(0).max(1)).sum()
 }
@@ -915,48 +1168,184 @@ fn fit(text: &str, max: usize) -> String {
 impl Render for CsvPreview {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = theme::palette(cx).clone();
+        let editor = self.edit_box(cx);
         div()
             .id("csv-table")
             .key_context("CsvTable")
             .track_focus(&self.focus_handle)
             .size_full()
+            .relative()
+            .overflow_hidden()
             .bg(palette.editor_bg)
-            .on_action(cx.listener(|this, _: &MoveUp, _, cx| this.move_by(-1, 0, cx)))
-            .on_action(cx.listener(|this, _: &MoveDown, _, cx| this.move_by(1, 0, cx)))
-            .on_action(cx.listener(|this, _: &MoveLeft, _, cx| this.move_by(0, -1, cx)))
-            .on_action(cx.listener(|this, _: &MoveRight, _, cx| this.move_by(0, 1, cx)))
-            .on_action(cx.listener(|this, _: &Tab, _, cx| this.move_by(0, 1, cx)))
-            .on_action(cx.listener(|this, _: &Outdent, _, cx| this.move_by(0, -1, cx)))
+            .on_action(cx.listener(|this, _: &MoveUp, _, cx| this.move_by(-1, 0, false, cx)))
+            .on_action(cx.listener(|this, _: &MoveDown, _, cx| this.move_by(1, 0, false, cx)))
+            .on_action(cx.listener(|this, _: &MoveLeft, _, cx| this.move_by(0, -1, false, cx)))
+            .on_action(cx.listener(|this, _: &MoveRight, _, cx| this.move_by(0, 1, false, cx)))
+            .on_action(cx.listener(|this, _: &SelectUp, _, cx| this.move_by(-1, 0, true, cx)))
+            .on_action(cx.listener(|this, _: &SelectDown, _, cx| this.move_by(1, 0, true, cx)))
+            .on_action(cx.listener(|this, _: &SelectLeft, _, cx| this.move_by(0, -1, true, cx)))
+            .on_action(cx.listener(|this, _: &SelectRight, _, cx| this.move_by(0, 1, true, cx)))
+            .on_action(cx.listener(|this, _: &Tab, window, cx| {
+                if this.editing.is_some() {
+                    this.commit_edit(0, 1, window, cx)
+                } else {
+                    this.move_by(0, 1, false, cx)
+                }
+            }))
+            .on_action(cx.listener(|this, _: &Outdent, window, cx| {
+                if this.editing.is_some() {
+                    this.commit_edit(0, -1, window, cx)
+                } else {
+                    this.move_by(0, -1, false, cx)
+                }
+            }))
             .on_action(cx.listener(|this, _: &PageUp, _, cx| {
                 let page = this.page_rows();
-                this.move_by(-page, 0, cx)
+                this.move_by(-page, 0, false, cx)
             }))
             .on_action(cx.listener(|this, _: &PageDown, _, cx| {
                 let page = this.page_rows();
-                this.move_by(page, 0, cx)
+                this.move_by(page, 0, false, cx)
             }))
-            .on_action(cx.listener(|this, _: &MoveDocStart, _, cx| {
-                let col = this.selected.map_or(0, |s| s.1);
-                this.select(0, col, cx)
+            .on_action(cx.listener(|this, _: &SelectPageUp, _, cx| {
+                let page = this.page_rows();
+                this.move_by(-page, 0, true, cx)
             }))
+            .on_action(cx.listener(|this, _: &SelectPageDown, _, cx| {
+                let page = this.page_rows();
+                this.move_by(page, 0, true, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &MoveDocStart, _, cx| this.jump(Some(0), None, false, cx)),
+            )
             .on_action(cx.listener(|this, _: &MoveDocEnd, _, cx| {
-                let col = this.selected.map_or(0, |s| s.1);
-                this.select(usize::MAX, col, cx)
+                this.jump(Some(usize::MAX), None, false, cx)
             }))
-            .on_action(cx.listener(|this, _: &MoveLineStart, _, cx| {
-                let row = this.selected.map_or(0, |s| s.0);
-                this.select(row, 0, cx)
-            }))
+            .on_action(
+                cx.listener(|this, _: &MoveLineStart, _, cx| this.jump(None, Some(0), false, cx)),
+            )
             .on_action(cx.listener(|this, _: &MoveLineEnd, _, cx| {
-                let row = this.selected.map_or(0, |s| s.0);
-                this.select(row, usize::MAX, cx)
+                this.jump(None, Some(usize::MAX), false, cx)
             }))
-            .on_action(cx.listener(|this, _: &Copy, _, cx| this.copy_selection(cx)))
-            .on_action(cx.listener(|this, _: &CopyRow, _, cx| this.copy_row(cx)))
+            .on_action(
+                cx.listener(|this, _: &SelectDocStart, _, cx| this.jump(Some(0), None, true, cx)),
+            )
+            .on_action(cx.listener(|this, _: &SelectDocEnd, _, cx| {
+                this.jump(Some(usize::MAX), None, true, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &SelectLineStart, _, cx| this.jump(None, Some(0), true, cx)),
+            )
+            .on_action(cx.listener(|this, _: &SelectLineEnd, _, cx| {
+                this.jump(None, Some(usize::MAX), true, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SelectAll, _, cx| this.select_all(cx)))
+            .on_action(cx.listener(|this, _: &Copy, _, cx| this.copy_selection(false, cx)))
+            .on_action(cx.listener(|this, _: &CopyRow, _, cx| this.copy_selection(true, cx)))
+            .on_action(
+                cx.listener(|this, _: &EditCell, window, cx| this.edit_active(None, window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &Newline, window, cx| {
+                // The text box doesn't take Enter itself.
+                if this.editing.is_some() {
+                    this.commit_edit(1, 0, window, cx)
+                } else {
+                    this.edit_active(None, window, cx)
+                }
+            }))
+            .on_action(cx.listener(|this, _: &Delete, _, cx| this.clear_selection(cx)))
+            .on_action(cx.listener(|this, _: &Backspace, _, cx| this.clear_selection(cx)))
+            .on_action(cx.listener(|this, _: &Cancel, window, cx| {
+                if this.editing.is_some() {
+                    this.cancel_edit(window, cx);
+                } else if let Some(s) = this.selection {
+                    // Escape collapses a range to its active cell.
+                    let (row, col) = s.anchor;
+                    this.selection = Some(Selection::cell(row, col));
+                    cx.notify();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &Undo, _, cx| {
+                this.editor.update(cx, |e, cx| e.undo(cx));
+                this.sync_with_editor(cx);
+            }))
+            .on_action(cx.listener(|this, _: &Redo, _, cx| {
+                this.editor.update(cx, |e, cx| e.redo(cx));
+                this.sync_with_editor(cx);
+            }))
+            .on_action(cx.listener(|this, _: &Save, window, cx| {
+                this.commit_edit(0, 0, window, cx);
+                this.editor.update(cx, |e, cx| e.save(window, cx).detach());
+            }))
+            .on_action(cx.listener(|this, _: &SaveAs, window, cx| {
+                this.commit_edit(0, 0, window, cx);
+                this.editor
+                    .update(cx, |e, cx| e.save_as(window, cx).detach());
+            }))
             .on_action(cx.listener(|this, action: &SetTableOption, _, cx| {
                 this.set_option(&action.option, cx)
             }))
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                // Typing on a selected cell replaces its value.
+                let keystroke = &event.keystroke;
+                let m = keystroke.modifiers;
+                if this.editing.is_some() || m.control || m.platform || m.function {
+                    return;
+                }
+                let Some(text) = keystroke.key_char.as_ref() else {
+                    return;
+                };
+                if text.chars().any(char::is_control) || this.selection.is_none() {
+                    return;
+                }
+                this.edit_active(Some(text.clone()), window, cx);
+                cx.stop_propagation();
+            }))
             .child(TableElement { view: cx.entity() })
+            .children(editor)
+    }
+}
+
+impl CsvPreview {
+    /// The text box over the cell being edited.
+    fn edit_box(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let editing = self.editing.as_ref()?;
+        let l = &self.layout;
+        let (left, right) = (*l.xs.get(editing.col)?, *l.xs.get(editing.col + 1)?);
+        let header = self.has_header() as usize;
+        let top = if editing.record < header {
+            l.header.top()
+        } else {
+            let row = editing.record - header;
+            let y = f32::from(l.row_height) as f64 * row as f64 - self.scroll_y;
+            l.body.top() + px(y as f32)
+        };
+        let x = l.body.left() + left - self.scroll_x;
+        let palette = theme::palette(cx).clone();
+        let settings = settings::get(cx);
+        Some(
+            div()
+                .absolute()
+                .left(x - l.origin.x)
+                .top(top - l.origin.y)
+                .w((right - left).max(px(120.)))
+                .h(l.row_height)
+                .px(px(CELL_PAD - 2.))
+                .flex()
+                .items_center()
+                .bg(palette.editor_bg)
+                .border_2()
+                .border_color(palette.accent)
+                .font_family(theme::fonts(cx).mono.clone())
+                .text_size(px(settings.font_size))
+                .text_color(palette.text)
+                .child(
+                    gpui_component::input::Input::new(&editing.input)
+                        .appearance(false)
+                        .text_size(px(settings.font_size)),
+                )
+                .into_any_element(),
+        )
     }
 }
 
@@ -1120,6 +1509,7 @@ impl Element for TableElement {
             view.layout = Layout {
                 body,
                 header,
+                origin: bounds.origin,
                 row_height,
                 xs: xs.clone(),
             };
@@ -1144,7 +1534,7 @@ impl Element for TableElement {
             let row_y = |row: usize| first_top + row_height * (row - first_row) as f32;
 
             // Body: stripes, selection, cells.
-            let selected = view.selected;
+            let selection = view.selection;
             for row in first_row..last_row {
                 let y = row_y(row);
                 if row % 2 == 1 {
@@ -1154,19 +1544,41 @@ impl Element for TableElement {
                     ));
                 }
             }
-            if let Some((row, col)) = selected
-                && (first_row..last_row).contains(&row)
-            {
-                let y = row_y(row);
-                state.body_quads.push(fill(
-                    Bounds::new(point(body.left(), y), size(body.size.width, row_height)),
-                    palette.row_selected_inactive,
-                ));
-                let cell = Bounds::new(
-                    point(col_x(col), y),
-                    size(xs[col + 1] - xs[col], row_height),
-                );
-                state.body_quads.push(fill(cell, palette.selection));
+            if let Some(sel) = selection {
+                let (sel_rows, sel_cols) = (sel.rows(rows), sel.cols(columns));
+                let (r0, r1) = (sel_rows.start.max(first_row), sel_rows.end.min(last_row));
+                let (c0, c1) = (sel_cols.start.max(first_col), sel_cols.end.min(last_col));
+                if sel.is_single() {
+                    let (row, _) = sel.anchor;
+                    if (first_row..last_row).contains(&row) {
+                        state.body_quads.push(fill(
+                            Bounds::new(
+                                point(body.left(), row_y(row)),
+                                size(body.size.width, row_height),
+                            ),
+                            palette.row_selected_inactive,
+                        ));
+                    }
+                }
+                if r0 < r1 && c0 < c1 {
+                    let top = row_y(r0);
+                    state.body_quads.push(fill(
+                        Bounds::new(
+                            point(col_x(c0), top),
+                            size(col_x(c1) - col_x(c0), row_height * (r1 - r0) as f32),
+                        ),
+                        palette.selection,
+                    ));
+                }
+                // The active cell is outlined.
+                let (row, col) = sel.anchor;
+                if !sel.is_single() && (first_row..last_row).contains(&row) && col < columns {
+                    let cell = Bounds::new(
+                        point(col_x(col), row_y(row)),
+                        size(xs[col + 1] - xs[col], row_height),
+                    );
+                    push_outline(&mut state.body_quads, cell, palette.accent);
+                }
             }
             let header_offset = view.has_header() as usize;
             let records: Vec<Vec<SharedString>> = view
@@ -1216,6 +1628,19 @@ impl Element for TableElement {
                 ),
                 palette.border,
             ));
+            if let Some(sel) = selection.filter(|s| s.span != Span::Cells) {
+                let cols = sel.cols(columns);
+                let (c0, c1) = (cols.start.max(first_col), cols.end.min(last_col));
+                if c0 < c1 && sel.span != Span::Rows {
+                    state.header_quads.push(fill(
+                        Bounds::new(
+                            point(col_x(c0), header.top()),
+                            size(col_x(c1) - col_x(c0), row_height),
+                        ),
+                        palette.selection,
+                    ));
+                }
+            }
             let names = view.header_names(first_col..last_col);
             let has_header = view.has_header();
             for (name, col) in names.iter().zip(first_col..last_col) {
@@ -1266,8 +1691,21 @@ impl Element for TableElement {
                 ),
                 palette.border,
             ));
+            if let Some(sel) = selection.filter(|s| matches!(s.span, Span::Rows | Span::All)) {
+                let sel_rows = sel.rows(rows);
+                let (r0, r1) = (sel_rows.start.max(first_row), sel_rows.end.min(last_row));
+                if r0 < r1 {
+                    state.gutter_quads.push(fill(
+                        Bounds::new(
+                            point(bounds.left(), row_y(r0)),
+                            size(gutter - px(1.), row_height * (r1 - r0) as f32),
+                        ),
+                        palette.selection,
+                    ));
+                }
+            }
             for row in first_row..last_row {
-                let active = selected.is_some_and(|(r, _)| r == row);
+                let active = selection.is_some_and(|s| s.rows(rows).contains(&row));
                 let color = if active {
                     palette.gutter_active_text
                 } else {
@@ -1403,6 +1841,9 @@ impl TableElement {
                 cx.stop_propagation();
             } else if event.button == MouseButton::Left {
                 view.update(cx, |view, cx| view.mouse_down(event, window, cx));
+                // The table sets focus itself (a double-click gives it to the
+                // cell's text box); the parent mustn't take it back.
+                window.prevent_default();
                 cx.stop_propagation();
             }
         });
@@ -1416,6 +1857,7 @@ impl TableElement {
         window.on_mouse_event(move |event: &MouseUpEvent, phase, _window, cx| {
             if phase == DispatchPhase::Bubble && event.button == MouseButton::Left {
                 view.update(cx, |view, cx| {
+                    view.dragging = None;
                     if view.resizing.take().is_some() {
                         cx.notify();
                     }

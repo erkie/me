@@ -52,8 +52,10 @@ no macOS title bar.
   header row and encoding are detected (Excel's semicolons and
   Windows-1252 included), and the status bar or a right click overrides
   them. Only the visible cells are drawn, so millions of rows scroll
-  smoothly; arrows move between cells, `⌘C` copies one, and `⇧⌘V` flips
-  to source
+  smoothly. Drag, shift-click or click the row and column headers to
+  select ranges, rows or columns, and `⌘C` copies them as TSV for pasting
+  into a spreadsheet. Double-click, `Enter` or just type to edit a cell,
+  `Delete` clears the selection, `⌘Z` undoes, and `⇧⌘V` flips to source
 - Images open as pictures you can **paint on**: pencil, eraser, fill,
   eyedropper, line, rectangle and ellipse, brush sizes, a palette and a
   colour picker, zoom down to crisp pixels, undo, and `⌘S` writes the file
