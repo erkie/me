@@ -258,6 +258,13 @@ pub fn open(
     new_window: bool,
     cx: &mut App,
 ) -> Vec<u64> {
+    crate::recent::note(
+        paths
+            .iter()
+            .filter(|p| p.path.exists())
+            .map(|p| p.path.clone()),
+        cx,
+    );
     let (dirs, files): (Vec<OpenPath>, Vec<OpenPath>) =
         paths.into_iter().partition(|p| p.path.is_dir());
     let mut target: Option<(WindowHandle<Root>, Entity<Workspace>)> = None;

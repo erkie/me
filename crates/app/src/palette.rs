@@ -12,7 +12,7 @@ use nucleo::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo::{Matcher, Utf32Str};
 
 use crate::actions::*;
-use crate::{platform, settings, theme};
+use crate::{platform, recent, settings, theme};
 
 const ROW_HEIGHT: f32 = 34.;
 const VISIBLE_ROWS: usize = 12;
@@ -121,6 +121,10 @@ fn commands(cx: &App) -> Vec<(String, Box<dyn Action>)> {
             Box::new(CloseTabsToTheRight),
         ),
         ("File: Reopen Closed Tab".into(), Box::new(ReopenClosedTab)),
+        (
+            "File: Clear Recently Opened".into(),
+            Box::new(ClearRecentlyOpened),
+        ),
         ("Edit: Toggle Comment".into(), Box::new(ToggleComment)),
         ("Edit: Duplicate Line".into(), Box::new(DuplicateLine)),
         ("Edit: Delete Line".into(), Box::new(DeleteLine)),
@@ -160,6 +164,12 @@ fn commands(cx: &App) -> Vec<(String, Box<dyn Action>)> {
             Box::new(UseSelectionForFind),
         ),
     ];
+    for path in recent::paths(cx) {
+        list.push((
+            format!("Open Recent: {}", recent::label(&path)),
+            Box::new(OpenRecent { path }),
+        ));
+    }
     for (label, hard_tabs, width) in [
         ("Indentation: Spaces (2)", false, 2),
         ("Indentation: Spaces (4)", false, 4),
