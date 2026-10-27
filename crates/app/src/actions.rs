@@ -195,8 +195,16 @@ actions!(
         ToggleWordWrap,
         CheckForUpdates,
         RestartToUpdate,
+        ClearRecentlyOpened,
     ]
 );
+
+/// Open a recently opened file or folder (from File > Recently Opened).
+#[derive(Clone, Debug, PartialEq, gpui::Action)]
+#[action(namespace = app, no_json)]
+pub struct OpenRecent {
+    pub path: std::path::PathBuf,
+}
 
 pub fn bind_keys(cx: &mut App) {
     let editor = Some("Editor");
