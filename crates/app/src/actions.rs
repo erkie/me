@@ -412,6 +412,28 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("pageup", PageUp, table),
         KeyBinding::new("pagedown", PageDown, table),
         KeyBinding::new("secondary-c", Copy, table),
+        KeyBinding::new("shift-left", SelectLeft, table),
+        KeyBinding::new("shift-right", SelectRight, table),
+        KeyBinding::new("shift-up", SelectUp, table),
+        KeyBinding::new("shift-down", SelectDown, table),
+        KeyBinding::new("shift-home", SelectLineStart, table),
+        KeyBinding::new("shift-end", SelectLineEnd, table),
+        KeyBinding::new("secondary-shift-up", SelectDocStart, table),
+        KeyBinding::new("secondary-shift-down", SelectDocEnd, table),
+        KeyBinding::new("shift-pageup", SelectPageUp, table),
+        KeyBinding::new("shift-pagedown", SelectPageDown, table),
+        KeyBinding::new("secondary-a", SelectAll, table),
+        KeyBinding::new("escape", Cancel, table),
+        // Editing cells.
+        KeyBinding::new("enter", Newline, table),
+        KeyBinding::new("f2", crate::csv::EditCell, table),
+        KeyBinding::new("delete", Delete, table),
+        KeyBinding::new("backspace", Backspace, table),
+        KeyBinding::new("secondary-z", Undo, table),
+        KeyBinding::new("secondary-shift-z", Redo, table),
+        KeyBinding::new("secondary-y", Redo, table),
+        KeyBinding::new("secondary-s", Save, table),
+        KeyBinding::new("secondary-shift-s", SaveAs, table),
     ]);
     #[cfg(target_os = "macos")]
     cx.bind_keys([

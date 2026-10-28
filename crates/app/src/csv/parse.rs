@@ -6,6 +6,7 @@
 //! megabytes of index; a visible row is reached by parsing forward from the
 //! checkpoint before it.
 
+use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use encoding_rs::Encoding;
@@ -14,7 +15,7 @@ use me_text::Rope;
 /// One record start is kept per this many records.
 pub const STRIDE: usize = 64;
 /// Fields are cut to this many bytes for display.
-const MAX_FIELD_BYTES: usize = 2048;
+pub const MAX_FIELD_BYTES: usize = 2048;
 /// A record (an unclosed quote, say) is read no further than this.
 const MAX_RECORD_BYTES: usize = 4 << 20;
 /// How much of the file the dialect is guessed from.
@@ -258,7 +259,8 @@ impl Index {
         })
     }
 
-    /// Up to `count` records from record `first` on, split into fields.
+    /// Up to `count` records from record `first` on, split into fields
+    /// (each cut for display).
     pub fn records(
         &self,
         rope: &Rope,
@@ -266,15 +268,37 @@ impl Index {
         first: usize,
         count: usize,
     ) -> Vec<Vec<String>> {
+        let mut out = Vec::with_capacity(count.min(self.records));
+        self.each_record(rope, dialect, first, count, MAX_FIELD_BYTES, |r| {
+            out.push(r)
+        });
+        out
+    }
+
+    /// Calls `f` with up to `count` records from record `first` on, fields
+    /// cut to `max_field` bytes. Doesn't hold them all, for copying a
+    /// million rows.
+    pub fn each_record(
+        &self,
+        rope: &Rope,
+        dialect: Dialect,
+        first: usize,
+        count: usize,
+        max_field: usize,
+        mut f: impl FnMut(Vec<String>),
+    ) {
         let first = first.min(self.records);
         let count = count.min(self.records - first);
         let Some(&start) = self.checkpoints.get(first / STRIDE) else {
-            return Vec::new();
+            return;
         };
         let mut skip = first % STRIDE;
-        let mut out = Vec::with_capacity(count);
-        let mut reader = FieldReader::new(dialect);
+        let mut done = 0;
+        let mut reader = FieldReader::new(dialect, max_field);
         let mut read = 0;
+        if count == 0 {
+            return;
+        }
         'chunks: for chunk in chunks_from(rope, start) {
             for &b in chunk {
                 read += 1;
@@ -283,30 +307,32 @@ impl Index {
                     if skip > 0 {
                         skip -= 1;
                     } else {
-                        out.push(record);
-                        if out.len() == count {
+                        f(record);
+                        done += 1;
+                        if done == count {
                             break 'chunks;
                         }
                     }
                 } else if read > MAX_RECORD_BYTES {
                     // Give up on a runaway record: show what we have.
                     if skip == 0 {
-                        out.push(reader.finish());
+                        f(reader.finish());
+                        done += 1;
                     }
                     break 'chunks;
                 }
             }
         }
-        if out.len() < count && skip == 0 && reader.mid_record() {
-            out.push(reader.finish());
+        if done < count && skip == 0 && reader.mid_record() {
+            f(reader.finish());
         }
-        out
     }
 }
 
 /// Splits bytes into fields, one record at a time.
 struct FieldReader {
     dialect: Dialect,
+    max_field: usize,
     state: State,
     field: Vec<u8>,
     fields: Vec<String>,
@@ -315,9 +341,10 @@ struct FieldReader {
 }
 
 impl FieldReader {
-    fn new(dialect: Dialect) -> Self {
+    fn new(dialect: Dialect, max_field: usize) -> Self {
         Self {
             dialect,
+            max_field,
             state: State::FieldStart,
             field: Vec::new(),
             fields: Vec::new(),
@@ -330,7 +357,7 @@ impl FieldReader {
     }
 
     fn put(&mut self, b: u8, keep: bool) {
-        if keep && self.field.len() < MAX_FIELD_BYTES {
+        if keep && self.field.len() < self.max_field {
             self.field.push(b);
         }
     }
@@ -401,7 +428,7 @@ impl FieldReader {
             }
             self.cr = b == b'\r';
             // A dropped (over-long) `\r` mustn't pop a kept byte.
-            if self.cr && self.field.len() >= MAX_FIELD_BYTES {
+            if self.cr && self.field.len() >= self.max_field {
                 self.cr = false;
             }
             self.put(b, keep);
@@ -590,6 +617,120 @@ pub fn guess_header(rope: &Rope, dialect: Dialect) -> bool {
     sniff_header(&index.records(rope, dialect, 0, 51))
 }
 
+// -------------------------------------------------------------------------
+// Writing
+// -------------------------------------------------------------------------
+
+/// Where one record's fields sit in the text, quotes included.
+#[derive(Debug, PartialEq)]
+pub struct RawRecord {
+    pub fields: Vec<Range<usize>>,
+    /// Where the next record starts.
+    pub next: usize,
+}
+
+/// The byte ranges of the fields of the record starting at `start`.
+/// `None` for a record too long to edit.
+pub fn raw_record(rope: &Rope, dialect: Dialect, start: usize) -> Option<RawRecord> {
+    let Dialect { delimiter, quote } = dialect;
+    let mut fields = Vec::new();
+    let mut field_start = start;
+    let mut state = State::FieldStart;
+    let mut pos = start;
+    let mut last = 0u8;
+    for chunk in chunks_from(rope, start) {
+        for &b in chunk {
+            match state {
+                State::Quoted => {
+                    if Some(b) == quote {
+                        state = State::QuoteInQuoted;
+                    }
+                }
+                _ if Some(b) == quote
+                    && matches!(state, State::FieldStart | State::QuoteInQuoted) =>
+                {
+                    state = State::Quoted;
+                }
+                _ if b == delimiter => {
+                    fields.push(field_start..pos);
+                    field_start = pos + 1;
+                    state = State::FieldStart;
+                }
+                _ if b == b'\n' => {
+                    let end = if last == b'\r' { pos - 1 } else { pos };
+                    fields.push(field_start..end.max(field_start));
+                    return Some(RawRecord {
+                        fields,
+                        next: pos + 1,
+                    });
+                }
+                _ => {
+                    if !(b == b' ' && state == State::FieldStart) {
+                        state = State::Unquoted;
+                    }
+                }
+            }
+            last = b;
+            pos += 1;
+            if pos - start > MAX_RECORD_BYTES {
+                return None;
+            }
+        }
+    }
+    fields.push(field_start..pos);
+    Some(RawRecord { fields, next: pos })
+}
+
+impl Index {
+    /// Where record `record` starts.
+    pub fn record_start(&self, rope: &Rope, dialect: Dialect, record: usize) -> Option<usize> {
+        if record >= self.records {
+            return None;
+        }
+        let mut start = *self.checkpoints.get(record / STRIDE)?;
+        for _ in 0..record % STRIDE {
+            start = raw_record(rope, dialect, start)?.next;
+        }
+        Some(start)
+    }
+}
+
+/// `value` as a field: quoted when it holds the separator, a quote or a
+/// line break.
+pub fn quote_field(value: &str, dialect: Dialect) -> String {
+    let Some(q) = dialect.quote.map(char::from) else {
+        return value.to_string();
+    };
+    let special =
+        |c: char| c == q || c == '\n' || c == '\r' || c as u32 == dialect.delimiter as u32;
+    if !value.contains(special) {
+        return value.to_string();
+    }
+    let doubled = value.replace(q, &format!("{q}{q}"));
+    format!("{q}{doubled}{q}")
+}
+
+/// The edit that puts `value` in column `col` of a record: the byte range
+/// to replace and its new text. Short records get the missing separators.
+pub fn field_edit(
+    raw: &RawRecord,
+    col: usize,
+    value: &str,
+    dialect: Dialect,
+) -> (Range<usize>, String) {
+    let text = quote_field(value, dialect);
+    match raw.fields.get(col) {
+        Some(range) => (range.clone(), text),
+        None => {
+            let end = raw.fields.last().map_or(0, |f| f.end);
+            let separators = (dialect.delimiter as char)
+                .to_string()
+                .repeat(col + 1 - raw.fields.len());
+            (end..end, separators + &text)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -712,5 +853,55 @@ mod tests {
         assert_eq!(sniff_encoding(b"a\0,\0b\0\n\0"), encoding_rs::UTF_16LE);
         assert_eq!(sniff_encoding(b"\0a\0,\0b\0\n"), encoding_rs::UTF_16BE);
         assert_eq!(decode(b"caf\xe9", encoding_rs::WINDOWS_1252), "café");
+    }
+
+    #[test]
+    fn finds_raw_fields() {
+        let text = "a,\"b,\"\"c\"\"\"\r\nx,y\nlast";
+        let rope = Rope::from_str(text);
+        let d = Dialect::default();
+        let first = raw_record(&rope, d, 0).unwrap();
+        let slices: Vec<&str> = first.fields.iter().map(|r| &text[r.clone()]).collect();
+        assert_eq!(slices, vec!["a", "\"b,\"\"c\"\"\""]);
+        let second = raw_record(&rope, d, first.next).unwrap();
+        assert_eq!(&text[second.fields[1].clone()], "y");
+        let third = raw_record(&rope, d, second.next).unwrap();
+        assert_eq!(&text[third.fields[0].clone()], "last");
+        assert_eq!(third.next, text.len());
+
+        let index = Index::build(&rope, d, None, &AtomicBool::new(false)).unwrap();
+        assert_eq!(index.record_start(&rope, d, 2), Some(second.next));
+        assert_eq!(index.record_start(&rope, d, 3), None);
+    }
+
+    #[test]
+    fn writes_fields() {
+        let d = Dialect::default();
+        assert_eq!(quote_field("plain", d), "plain");
+        assert_eq!(quote_field("a,b", d), "\"a,b\"");
+        assert_eq!(quote_field("say \"hi\"", d), "\"say \"\"hi\"\"\"");
+        assert_eq!(quote_field("two\nlines", d), "\"two\nlines\"");
+        let tab = Dialect {
+            delimiter: b'\t',
+            quote: Some(b'"'),
+        };
+        assert_eq!(quote_field("a,b", tab), "a,b");
+
+        // Editing round-trips through the parser.
+        let text = "id,name\n1,ann\n2\n";
+        let rope = Rope::from_str(text);
+        let index = Index::build(&rope, d, None, &AtomicBool::new(false)).unwrap();
+        let edit = |record: usize, col: usize, value: &str| {
+            let start = index.record_start(&rope, d, record).unwrap();
+            let raw = raw_record(&rope, d, start).unwrap();
+            let (range, new) = field_edit(&raw, col, value, d);
+            let mut out = text.to_string();
+            out.replace_range(range, &new);
+            out
+        };
+        assert_eq!(edit(1, 1, "bo, jr"), "id,name\n1,\"bo, jr\"\n2\n");
+        assert_eq!(edit(2, 1, "cy"), "id,name\n1,ann\n2,cy\n");
+        assert_eq!(edit(2, 3, "z"), "id,name\n1,ann\n2,,,z\n");
+        assert_eq!(csv(&edit(1, 1, "a\"b\nc"))[1], vec!["1", "a\"b\nc"]);
     }
 }
