@@ -20,6 +20,7 @@ use me_project::{FileMatches, SearchOptions, SearchStats};
 use me_text::SearchQuery;
 
 use crate::find_bar::{text_button, toggle_button};
+use crate::scrollbar::Scrollbar;
 use crate::theme;
 
 const MAX_MATCHES: usize = 20_000;
@@ -470,7 +471,8 @@ impl Render for SearchPanel {
                         )
                         .track_scroll(&self.scroll)
                         .size_full(),
-                    ),
+                    )
+                    .child(Scrollbar::vertical(&self.scroll)),
             )
     }
 }

@@ -33,6 +33,7 @@ use crate::actions::{
     SelectRight, SelectUp, Tab, TogglePreview, Undo,
 };
 use crate::editor::{EditorEvent, EditorView};
+use crate::scrollbar::{self, ScrollMetrics, Scrollbar};
 use crate::{settings, theme};
 use edit::Editing;
 pub use parse::is_table;
@@ -49,7 +50,6 @@ const MAX_COLUMN_CHARS: usize = 40;
 const CELL_PAD: f32 = 8.;
 /// How close to a header edge a drag resizes the column.
 const RESIZE_GRAB: f32 = 4.;
-const SCROLLBAR_VISIBLE_FOR: Duration = Duration::from_millis(1200);
 /// How long a hint ("this file is read-only here") stays in the status bar.
 const HINT_FOR: Duration = Duration::from_secs(4);
 
@@ -147,7 +147,8 @@ pub struct CsvPreview {
     scroll_x: Pixels,
     /// In f64: a million rows down is past where f32 pixels are exact.
     scroll_y: f64,
-    scrolled_at: Option<Instant>,
+    /// Shared with the scrollbars drawn over the table.
+    scrollbar: ScrollMetrics,
     selection: Option<Selection>,
     /// What the mouse is selecting while its button is down.
     dragging: Option<Span>,
@@ -197,7 +198,7 @@ impl CsvPreview {
             refresh: None,
             scroll_x: px(0.),
             scroll_y: 0.,
-            scrolled_at: None,
+            scrollbar: ScrollMetrics::default(),
             selection: None,
             dragging: None,
             editing: None,
@@ -525,13 +526,6 @@ impl CsvPreview {
         self.scroll_x -= delta.x;
         self.scroll_y -= f32::from(delta.y) as f64;
         self.clamp_scroll();
-        self.scrolled_at = Some(Instant::now());
-        // Repaint once more after the overlay scrollbars should fade.
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(SCROLLBAR_VISIBLE_FOR).await;
-            this.update(cx, |_, cx| cx.notify()).ok();
-        })
-        .detach();
         cx.notify();
     }
 
@@ -1302,6 +1296,9 @@ impl Render for CsvPreview {
                 cx.stop_propagation();
             }))
             .child(TableElement { view: cx.entity() })
+            .child(
+                Scrollbar::new(&self.scrollbar).id(scrollbar::id("csv-scrollbar", cx.entity_id())),
+            )
             .children(editor)
     }
 }
@@ -1481,6 +1478,8 @@ impl Element for TableElement {
                 );
                 state.notice = Some(Text { origin, line });
                 view.layout = Layout::default();
+                view.scrollbar
+                    .publish(bounds, gpui::Size::default(), Point::default());
                 return state;
             }
 
@@ -1513,9 +1512,20 @@ impl Element for TableElement {
                 row_height,
                 xs: xs.clone(),
             };
+            // A drag or click on the scrollbars. Down is taken as a fraction
+            // so a million rows in it still lands on the right one.
+            if let Some(offset) = view.scrollbar.take_request() {
+                view.scroll_x = -offset.x;
+                view.scroll_y = view.scrollbar.ratio_y(offset) * view.max_scroll_y();
+            }
             view.clamp_scroll();
             let scroll_x = view.scroll_x;
             let scroll_y = view.scroll_y;
+            view.scrollbar.publish(
+                body,
+                size(view.content_width(), px(view.content_height() as f32)),
+                point(-scroll_x, px(-scroll_y as f32)),
+            );
             state.body = body;
 
             // What's visible.
@@ -1719,43 +1729,6 @@ impl Element for TableElement {
                 });
             }
 
-            // Overlay scrollbars while scrolling, like the editor.
-            if view
-                .scrolled_at
-                .is_some_and(|t| t.elapsed() < SCROLLBAR_VISIBLE_FOR)
-            {
-                let content_height = view.content_height();
-                let content_width = view.content_width();
-                let thumb_color = palette.text_tertiary.opacity(0.6);
-                let max_y = view.max_scroll_y();
-                if max_y > 0. {
-                    let track = body.size.height - px(4.);
-                    let visible = f32::from(body.size.height) as f64 / content_height;
-                    let thumb = (track * visible as f32).max(px(24.));
-                    let ratio = (scroll_y / max_y) as f32;
-                    let y = body.top() + px(2.) + (track - thumb) * ratio;
-                    state.overlay.push(
-                        fill(
-                            Bounds::new(point(bounds.right() - px(9.), y), size(px(6.), thumb)),
-                            thumb_color,
-                        )
-                        .corner_radii(px(3.)),
-                    );
-                }
-                if content_width > body.size.width {
-                    let track = body.size.width - px(14.);
-                    let thumb = (track * (body.size.width / content_width)).max(px(24.));
-                    let ratio = scroll_x / (content_width - body.size.width);
-                    let x = body.left() + px(2.) + (track - thumb) * ratio;
-                    state.overlay.push(
-                        fill(
-                            Bounds::new(point(x, bounds.bottom() - px(9.)), size(thumb, px(6.))),
-                            thumb_color,
-                        )
-                        .corner_radii(px(3.)),
-                    );
-                }
-            }
             state
         })
     }

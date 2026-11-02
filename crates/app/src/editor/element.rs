@@ -6,7 +6,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use gpui::{
     Anchor, AnyElement, App, AvailableSpace, Bounds, ContentMask, CursorStyle, DispatchPhase,
@@ -38,7 +37,6 @@ const LONG_LINE: usize = 4096;
 const MAX_HIGHLIGHT_BYTES: usize = 512 * 1024;
 /// Wrap results are cached for lines at least this long.
 const CACHE_WRAP_FROM: usize = 1024;
-const SCROLLBAR_VISIBLE_FOR: Duration = Duration::from_millis(1200);
 
 /// Geometry of the last painted frame, used for mouse hit-testing, IME and
 /// row-wise movement.
@@ -385,7 +383,6 @@ pub struct PrepaintState {
     squiggles: Vec<(Point<Pixels>, Pixels, Hsla)>,
     /// The hover popover, drawn on top of everything.
     popover: Option<AnyElement>,
-    scrollbar: Option<PaintQuad>,
     notice: Option<(Point<Pixels>, ShapedLine)>,
     line_height: Pixels,
 }
@@ -471,6 +468,13 @@ impl Element for EditorElement {
                 lh,
                 &mut view.wrap_cache,
             );
+            // A drag or click on the scrollbar: the same fraction of the way
+            // down as the thumb.
+            if let Some(offset) = view.scrollbar.take_request() {
+                view.scroll.y = view.scrollbar.ratio_y(offset) * rows.max_scroll(height);
+                view.pending_scroll = 0.;
+                view.autoscroll = None;
+            }
             if view.pending_scroll != 0. {
                 view.scroll.y = rows.advance(view.scroll.y, view.pending_scroll);
                 view.pending_scroll = 0.;
@@ -833,34 +837,21 @@ impl Element for EditorElement {
             gutter.push((point(x, row.top), shaped));
         }
 
-        // Overlay scrollbar while scrolling, like macOS. With word wrap the
-        // total height is estimated from the visible rows.
-        let scrollbar = view
-            .scrolled_at
-            .filter(|t| t.elapsed() < SCROLLBAR_VISIBLE_FOR)
-            .and_then(|_| {
-                let visible_lines = plan
-                    .last()
-                    .zip(plan.first())
-                    .map(|(l, f)| l.line - f.line + 1)
-                    .unwrap_or(1);
-                let rows_per_line = plan.len().max(1) as f64 / visible_lines as f64;
-                let content = lh * len_lines as f64 * rows_per_line;
-                if content <= height || max_scroll <= 0. {
-                    return None;
-                }
-                let track = bounds.size.height - px(4.);
-                let thumb = (track * (height / content) as f32).max(px(24.));
-                let ratio = (scroll.y / max_scroll) as f32;
-                let y = bounds.top() + px(2.) + (track - thumb) * ratio;
-                Some(
-                    fill(
-                        Bounds::new(point(bounds.right() - px(9.), y), size(px(6.), thumb)),
-                        palette.text_tertiary.opacity(0.6),
-                    )
-                    .corner_radii(px(3.)),
-                )
-            });
+        // The scrollbar works in pixels and `scroll.y` counts lines. With
+        // word wrap lines differ in height, so scale by the rows per line on
+        // screen: an estimate, as the editor doesn't lay out every line.
+        let visible_lines = plan
+            .last()
+            .zip(plan.first())
+            .map(|(l, f)| l.line - f.line + 1)
+            .unwrap_or(1);
+        let rows_per_line = plan.len().max(1) as f64 / visible_lines as f64;
+        let scale = lh * rows_per_line;
+        view.scrollbar.publish(
+            bounds,
+            size(bounds.size.width, px((height + max_scroll * scale) as f32)),
+            point(px(0.), px((-scroll.y * scale) as f32)),
+        );
 
         let notice = view.notice.clone().map(|text| {
             let run = TextRun {
@@ -996,7 +987,6 @@ impl Element for EditorElement {
             blank,
             squiggles,
             popover,
-            scrollbar,
             notice,
             line_height,
         }
@@ -1071,9 +1061,6 @@ impl Element for EditorElement {
         }
         if let Some((origin, line)) = &prepaint.notice {
             let _ = line.paint(*origin, line_height, TextAlign::Left, None, window, cx);
-        }
-        if let Some(scrollbar) = prepaint.scrollbar.take() {
-            window.paint_quad(scrollbar);
         }
         if let Some(mut popover) = prepaint.popover.take() {
             popover.paint(window, cx);
@@ -1164,16 +1151,7 @@ impl EditorElement {
                 return;
             }
             let delta = event.delta.pixel_delta(line_height);
-            view.update(cx, |view, cx| {
-                view.scroll_by(delta, cx);
-                view.scrolled_at = Some(Instant::now());
-                // Repaint once more after the overlay scrollbar should fade.
-                cx.spawn(async move |view, cx| {
-                    cx.background_executor().timer(SCROLLBAR_VISIBLE_FOR).await;
-                    view.update(cx, |_, cx| cx.notify()).ok();
-                })
-                .detach();
-            });
+            view.update(cx, |view, cx| view.scroll_by(delta, cx));
             cx.stop_propagation();
         });
     }

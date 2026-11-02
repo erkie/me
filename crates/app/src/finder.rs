@@ -15,6 +15,7 @@ use gpui::{
 use gpui_component::input::{Input, InputEvent, InputState};
 use me_project::{FileFinder, FileMatch, split_line_suffix};
 
+use crate::scrollbar::Scrollbar;
 use crate::{file_icons, theme};
 
 const MAX_RESULTS: usize = 200;
@@ -246,6 +247,7 @@ impl Render for FinderView {
                     .track_scroll(&self.scroll)
                     .h(list_height),
                 )
+                .child(Scrollbar::vertical(&self.scroll))
             }))
             .child(
                 div()

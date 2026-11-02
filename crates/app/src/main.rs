@@ -25,6 +25,7 @@ mod picker;
 mod platform;
 mod recent;
 mod rename;
+mod scrollbar;
 mod search_panel;
 mod session;
 mod settings;
