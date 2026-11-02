@@ -28,6 +28,7 @@ use me_text::{
 use serde::{Deserialize, Serialize};
 
 use crate::actions::*;
+use crate::scrollbar::{self, ScrollMetrics};
 use completion::{ActionItem, ActionsMenu, CompletionMenu, CompletionTrigger, Completions};
 use diagnostics::Diagnostic;
 use element::{EditorElement, LayoutSnapshot, WrapCache};
@@ -179,7 +180,8 @@ pub struct EditorView {
     pub(crate) cursor_visible: bool,
     blink_epoch: usize,
     blink_task: Option<Task<()>>,
-    pub(crate) scrolled_at: Option<std::time::Instant>,
+    /// Shared with the scrollbar drawn over the editor.
+    pub(crate) scrollbar: ScrollMetrics,
     pub(crate) search: Option<Arc<Matcher>>,
     pub(crate) active_match: Option<Range<usize>>,
     read_only: bool,
@@ -257,7 +259,7 @@ impl EditorView {
             cursor_visible: true,
             blink_epoch: 0,
             blink_task: None,
-            scrolled_at: None,
+            scrollbar: ScrollMetrics::default(),
             search: None,
             active_match: None,
             read_only: false,
@@ -2080,6 +2082,11 @@ impl Render for EditorView {
             .on_action(cx.listener(|this, _: &NextSnippetStop, _, cx| this.snippet_jump(true, cx)))
             .on_action(cx.listener(|this, _: &PrevSnippetStop, _, cx| this.snippet_jump(false, cx)))
             .child(EditorElement::new(cx.entity()))
+            .child(scrollbar::vertical(
+                &self.scrollbar,
+                scrollbar::id("editor-scrollbar", cx.entity_id()),
+                cx,
+            ))
     }
 }
 
