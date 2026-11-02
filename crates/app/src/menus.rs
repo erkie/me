@@ -103,7 +103,13 @@ fn open_recent(path: &std::path::Path, cx: &mut App) {
         line: None,
         column: None,
     };
-    app_state::open(vec![path], None, false, cx);
+    // Menu and palette actions run while the active window is being updated,
+    // so `app_state::open` couldn't update that same window (an empty one it
+    // would reuse, or the one a file belongs in) and silently did nothing.
+    // Opening on the next tick runs it outside that update.
+    cx.defer(move |cx| {
+        app_state::open(vec![path], None, false, cx);
+    });
 }
 
 /// Rebuilds the menu bar, for menus whose items change (Recently Opened).
