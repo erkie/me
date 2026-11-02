@@ -16,6 +16,7 @@ use gpui_component::native_menu::NativeMenu;
 use me_project::{DirEntry, list_dir};
 
 use crate::actions::{CopyPath, CopyRelativePath, RevealInFinder};
+use crate::scrollbar::Scrollbar;
 use crate::{file_icons, platform, theme};
 
 actions!(
@@ -663,6 +664,7 @@ impl Render for FileTree {
                 .size_full()
                 .pb(px(8.)),
             )
+            .child(Scrollbar::vertical(&self.scroll))
     }
 }
 

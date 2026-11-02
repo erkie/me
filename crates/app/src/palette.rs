@@ -12,6 +12,7 @@ use nucleo::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo::{Matcher, Utf32Str};
 
 use crate::actions::*;
+use crate::scrollbar::Scrollbar;
 use crate::{platform, recent, settings, theme};
 
 const ROW_HEIGHT: f32 = 34.;
@@ -469,6 +470,7 @@ impl Render for CommandPalette {
                             .track_scroll(&self.scroll)
                             .h(list_height - px(8.)),
                         )
+                        .child(Scrollbar::vertical(&self.scroll))
                     }),
             )
     }

@@ -28,7 +28,7 @@ use me_text::{
 use serde::{Deserialize, Serialize};
 
 use crate::actions::*;
-use crate::scrollbar::{self, ScrollMetrics};
+use crate::scrollbar::{self, ScrollMetrics, Scrollbar};
 use completion::{ActionItem, ActionsMenu, CompletionMenu, CompletionTrigger, Completions};
 use diagnostics::Diagnostic;
 use element::{EditorElement, LayoutSnapshot, WrapCache};
@@ -2082,11 +2082,10 @@ impl Render for EditorView {
             .on_action(cx.listener(|this, _: &NextSnippetStop, _, cx| this.snippet_jump(true, cx)))
             .on_action(cx.listener(|this, _: &PrevSnippetStop, _, cx| this.snippet_jump(false, cx)))
             .child(EditorElement::new(cx.entity()))
-            .child(scrollbar::vertical(
-                &self.scrollbar,
-                scrollbar::id("editor-scrollbar", cx.entity_id()),
-                cx,
-            ))
+            .child(
+                Scrollbar::vertical(&self.scrollbar)
+                    .id(scrollbar::id("editor-scrollbar", cx.entity_id())),
+            )
     }
 }
 

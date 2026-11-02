@@ -20,7 +20,7 @@ use me_text::Rope;
 
 use crate::actions::{Copy, CopyPath, CopyRelativePath, RevealInFinder, SelectAll, TogglePreview};
 use crate::editor::{EditorEvent, EditorView};
-use crate::scrollbar;
+use crate::scrollbar::{self, Scrollbar};
 use crate::theme::Palette;
 use crate::{settings, theme};
 
@@ -373,15 +373,10 @@ impl Render for MarkdownPreview {
                 ),
             );
 
-        div()
-            .relative()
-            .size_full()
-            .child(content)
-            .child(scrollbar::vertical(
-                &self.scroll,
-                scrollbar::id("markdown-scrollbar", cx.entity_id()),
-                cx,
-            ))
+        div().relative().size_full().child(content).child(
+            Scrollbar::vertical(&self.scroll)
+                .id(scrollbar::id("markdown-scrollbar", cx.entity_id())),
+        )
     }
 }
 

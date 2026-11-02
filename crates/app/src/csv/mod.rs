@@ -33,7 +33,7 @@ use crate::actions::{
     SelectRight, SelectUp, Tab, TogglePreview, Undo,
 };
 use crate::editor::{EditorEvent, EditorView};
-use crate::scrollbar::{self, ScrollMetrics};
+use crate::scrollbar::{self, ScrollMetrics, Scrollbar};
 use crate::{settings, theme};
 use edit::Editing;
 pub use parse::is_table;
@@ -1296,11 +1296,9 @@ impl Render for CsvPreview {
                 cx.stop_propagation();
             }))
             .child(TableElement { view: cx.entity() })
-            .child(scrollbar::both(
-                &self.scrollbar,
-                scrollbar::id("csv-scrollbar", cx.entity_id()),
-                cx,
-            ))
+            .child(
+                Scrollbar::new(&self.scrollbar).id(scrollbar::id("csv-scrollbar", cx.entity_id())),
+            )
             .children(editor)
     }
 }
