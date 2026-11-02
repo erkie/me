@@ -4,14 +4,14 @@
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{
-    App, AppContext, ClickEvent, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
+    App, AppContext, Bounds, ClickEvent, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
     Focusable, FontWeight, HighlightStyle, ImageSource, InteractiveElement, IntoElement, Modifiers,
-    MouseButton, MouseDownEvent, ParentElement, Pixels, Point, Render, SharedUri,
-    StatefulInteractiveElement, StyleRefinement, Styled, Subscription, Task, Window, div, px,
-    relative, rems,
+    MouseButton, MouseDownEvent, ParentElement, Pixels, Point, Render, ScrollHandle, SharedUri,
+    StatefulInteractiveElement, StyleRefinement, Styled, Subscription, Task, Window, canvas, div,
+    fill, point, px, relative, rems, size,
 };
 use gpui_base::text::{CodeBlock, MarkdownExtensions};
 use gpui_base::{TextView, TextViewState, TextViewStyle};
@@ -27,6 +27,9 @@ type CodeHighlighter = Arc<dyn Fn(&CodeBlock) -> Vec<(Range<usize>, HighlightSty
 
 /// Re-render at most this often while the source changes.
 const REFRESH_DELAY: Duration = Duration::from_millis(120);
+/// How long the overlay scrollbar stays after the last scroll, like the
+/// editor and the CSV table.
+const SCROLLBAR_VISIBLE_FOR: Duration = Duration::from_millis(1200);
 
 pub enum MarkdownEvent {
     /// A link to a local file was clicked (already resolved to a path).
@@ -44,6 +47,8 @@ pub struct MarkdownPreview {
     /// Kept across frames: code blocks reuse their highlights only while the
     /// highlighter stays the same `Arc`. Rebuilt when the theme flips.
     highlighter: Option<(bool, CodeHighlighter)>,
+    scroll: ScrollHandle,
+    scrolled_at: Option<Instant>,
     _subscription: Subscription,
 }
 
@@ -84,6 +89,8 @@ impl MarkdownPreview {
             revision,
             refresh: None,
             highlighter: None,
+            scroll: ScrollHandle::new(),
+            scrolled_at: None,
             _subscription: subscription,
         }
     }
@@ -110,6 +117,17 @@ impl MarkdownPreview {
 
     /// Right click: Copy and Select All for the rendered text, plus the same
     /// file items as the source editor.
+    fn scrolled(&mut self, cx: &mut Context<Self>) {
+        self.scrolled_at = Some(Instant::now());
+        // Repaint once more after the overlay scrollbar should fade.
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SCROLLBAR_VISIBLE_FOR).await;
+            this.update(cx, |_, cx| cx.notify()).ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
     fn context_menu(
         &mut self,
         position: Point<Pixels>,
@@ -321,7 +339,31 @@ impl Render for MarkdownPreview {
                 });
             });
 
-        div()
+        let scrolling = self
+            .scrolled_at
+            .is_some_and(|t| t.elapsed() < SCROLLBAR_VISIBLE_FOR);
+        let scroll = self.scroll.clone();
+        let thumb_color = palette.text_tertiary.opacity(0.6);
+        // Painted after the content, reading the handle then, so the thumb
+        // matches this frame's offset. A canvas takes no mouse events.
+        let scrollbar = canvas(
+            move |bounds, _, _| {
+                scrolling
+                    .then(|| scrollbar_thumb(bounds, &scroll))
+                    .flatten()
+            },
+            move |_, thumb, window, _| {
+                if let Some(thumb) = thumb {
+                    window.paint_quad(fill(thumb, thumb_color).corner_radii(px(3.)));
+                }
+            },
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full();
+
+        let content = div()
             .id("markdown-scroll")
             .key_context("MarkdownPreview")
             .track_focus(&self.focus_handle)
@@ -350,8 +392,10 @@ impl Render for MarkdownPreview {
                     }
                 }),
             )
+            .on_scroll_wheel(cx.listener(|this, _, _, cx| this.scrolled(cx)))
             .size_full()
             .overflow_y_scroll()
+            .track_scroll(&self.scroll)
             .bg(palette.editor_bg)
             .text_color(palette.text)
             .text_size(px(body))
@@ -367,8 +411,29 @@ impl Render for MarkdownPreview {
                         .pb(px(64.))
                         .child(view),
                 ),
-            )
+            );
+
+        div().relative().size_full().child(content).child(scrollbar)
     }
+}
+
+/// The overlay thumb for a vertical scroll of `scroll` within `bounds`,
+/// sized and placed like the editor's. None when everything fits.
+fn scrollbar_thumb(bounds: Bounds<Pixels>, scroll: &ScrollHandle) -> Option<Bounds<Pixels>> {
+    let max = scroll.max_offset().y;
+    if max <= px(0.) {
+        return None;
+    }
+    let height = bounds.size.height;
+    let content = height + max;
+    let track = height - px(4.);
+    let thumb = (track * (height / content)).max(px(24.)).min(track);
+    let ratio = (-scroll.offset().y / max).clamp(0., 1.);
+    let y = bounds.top() + px(2.) + (track - thumb) * ratio;
+    Some(Bounds::new(
+        point(bounds.right() - px(9.), y),
+        size(px(6.), thumb),
+    ))
 }
 
 /// Control-click is a right click on macOS.
