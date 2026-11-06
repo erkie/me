@@ -126,8 +126,11 @@ fn main() {
     app.on_open_urls(move |urls| {
         let _ = urls_tx.unbounded_send(urls);
     });
+    // macOS can deliver a reopen before the app finishes launching, e.g. a
+    // Dock click while it starts up. App state doesn't exist yet then, and
+    // launching opens a window anyway.
     app.on_reopen(|cx| {
-        if app_state::workspaces(cx).is_empty() {
+        if app_state::is_initialized(cx) && app_state::workspaces(cx).is_empty() {
             app_state::restore_or_open(cx);
         }
     });

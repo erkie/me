@@ -48,6 +48,11 @@ pub fn init(cx: &mut App) {
     .detach();
 }
 
+/// Whether `init` has run, which happens once the app finishes launching.
+pub fn is_initialized(cx: &App) -> bool {
+    cx.has_global::<AppState>()
+}
+
 /// Whether a `me -w` process is waiting for tab `id` to close.
 pub fn is_waited(id: u64, cx: &App) -> bool {
     cx.global::<AppState>().waiters.contains_key(&id)
