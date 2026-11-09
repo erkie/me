@@ -125,6 +125,11 @@ impl LayoutSnapshot {
                 }
                 (r.line, col)
             }
+            None if p.y >= last.top + self.line_height && last.last && last.line == last_line => {
+                // Below the end of the document: the caret goes to the end,
+                // as in native text views.
+                (last_line, doc.line_len(last_line))
+            }
             None => {
                 // Outside the painted rows (dragging past the edge): count
                 // one line per row height.
@@ -1226,5 +1231,65 @@ fn push_range_quads(
         }
         let origin = to_window(x1, row);
         out.push(fill(Bounds::new(origin, size(x2 - x1, line_height)), color).corner_radii(px(2.)));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn snapshot(rows: Vec<RowLayout>) -> LayoutSnapshot {
+        LayoutSnapshot {
+            bounds: Bounds::default(),
+            text_left: px(0.),
+            line_height: px(20.),
+            char_width: px(10.),
+            scroll_x: px(0.),
+            tab_width: 4,
+            wrap_cols: Some(10),
+            rows,
+        }
+    }
+
+    fn row(line: usize, start_col: usize, end_col: usize, top: f32, last: bool) -> RowLayout {
+        RowLayout {
+            line,
+            start_col,
+            end_col,
+            top: px(top),
+            char_x: (0..=end_col - start_col)
+                .map(|i| px(i as f32 * 10.))
+                .collect(),
+            first: start_col == 0,
+            last,
+            windowed: false,
+        }
+    }
+
+    #[test]
+    fn click_below_document_goes_to_end() {
+        // One line wrapped into two rows: "hello wor" / "ld".
+        let state = EditorState::from_str("hello world");
+        let layout = snapshot(vec![row(0, 0, 9, 0., false), row(0, 9, 11, 20., true)]);
+        let hit = layout.hit(point(px(5.), px(200.)), &state);
+        assert_eq!(hit.pos, 11);
+        assert_eq!(hit.line, 0);
+    }
+
+    #[test]
+    fn click_on_last_row_uses_column() {
+        let state = EditorState::from_str("ab\ncd");
+        let layout = snapshot(vec![row(0, 0, 2, 0., true), row(1, 0, 2, 20., true)]);
+        let hit = layout.hit(point(px(1.), px(25.)), &state);
+        assert_eq!(hit.pos, 3);
+    }
+
+    #[test]
+    fn drag_below_viewport_mid_document_keeps_column() {
+        // Only the first line is painted; the document continues below.
+        let state = EditorState::from_str("abcd\nefgh\nijkl");
+        let layout = snapshot(vec![row(0, 0, 4, 0., true)]);
+        let hit = layout.hit(point(px(10.), px(25.)), &state);
+        assert_eq!(hit.pos, 6);
     }
 }
