@@ -1,6 +1,7 @@
 //! Rendered markdown for a tab. The source lives in an [`EditorView`] so
 //! flipping to source (Cmd+Shift+V) shows the same, live text.
 
+use std::borrow::Cow;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -78,7 +79,7 @@ impl MarkdownPreview {
             let e = editor.read(cx);
             (e.text(), e.revision())
         };
-        let text = cx.new(|cx| TextViewState::markdown(&text, cx));
+        let text = cx.new(|cx| TextViewState::markdown(&escape_prose_dollars(&text), cx));
         Self {
             focus_handle: cx.focus_handle(),
             editor,
@@ -103,7 +104,9 @@ impl MarkdownPreview {
                 if editor.revision() != this.revision || editor.is_loading() {
                     this.revision = editor.revision();
                     let text = editor.text();
-                    this.text.update(cx, |state, cx| state.set_text(&text, cx));
+                    this.text.update(cx, |state, cx| {
+                        state.set_text(&escape_prose_dollars(&text), cx)
+                    });
                     cx.notify();
                 }
             })
@@ -213,6 +216,60 @@ fn image_source(base: Option<PathBuf>) -> impl Fn(&SharedUri) -> ImageSource + S
             Some(base) if path.is_relative() => ImageSource::from(base.join(path)),
             _ => ImageSource::from(path.to_path_buf()),
         }
+    }
+}
+
+/// gpui-base always parses `$…$` as inline math. With no math plugin it
+/// re-parses only the text between the dollars, so emphasis that crosses a
+/// dollar sign breaks: in `**$36K** for … cost $58K` the closing `**` sits
+/// inside the math span and the bold never renders. We don't render math, so
+/// escape every lone `$` in prose before the parser sees it. Runs of `$$`
+/// (block math, which falls back to a code block) and dollars in code, URLs
+/// and HTML are left alone.
+fn escape_prose_dollars(source: &str) -> Cow<'_, str> {
+    if !source.contains('$') {
+        return Cow::Borrowed(source);
+    }
+    let mut options = markdown::ParseOptions::gfm();
+    options.constructs.frontmatter = true;
+    let Ok(root) = markdown::to_mdast(source, &options) else {
+        return Cow::Borrowed(source);
+    };
+    let mut dollars = Vec::new();
+    collect_prose_dollars(&root, source.as_bytes(), &mut dollars);
+    if dollars.is_empty() {
+        return Cow::Borrowed(source);
+    }
+    dollars.sort_unstable();
+    let mut escaped = String::with_capacity(source.len() + dollars.len());
+    let mut last = 0;
+    for ix in dollars {
+        escaped.push_str(&source[last..ix]);
+        escaped.push('\\');
+        last = ix;
+    }
+    escaped.push_str(&source[last..]);
+    Cow::Owned(escaped)
+}
+
+fn collect_prose_dollars(node: &markdown::mdast::Node, bytes: &[u8], out: &mut Vec<usize>) {
+    if let (markdown::mdast::Node::Text(_), Some(position)) = (node, node.position()) {
+        for ix in position.start.offset..position.end.offset {
+            let lone = bytes[ix] == b'$'
+                && (ix == 0 || bytes[ix - 1] != b'$')
+                && bytes.get(ix + 1) != Some(&b'$');
+            let backslashes = bytes[..ix]
+                .iter()
+                .rev()
+                .take_while(|&&b| b == b'\\')
+                .count();
+            if lone && backslashes % 2 == 0 {
+                out.push(ix);
+            }
+        }
+    }
+    for child in node.children().into_iter().flatten() {
+        collect_prose_dollars(child, bytes, out);
     }
 }
 
@@ -387,4 +444,64 @@ fn is_control_click(modifiers: Modifiers) -> bool {
 
 fn is_secondary_click(event: &ClickEvent) -> bool {
     event.is_right_click() || (!event.is_middle_click() && is_control_click(event.modifiers()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::escape_prose_dollars;
+    use markdown::mdast::Node;
+
+    /// Parse the way gpui-base does: GFM with math on.
+    fn parse_with_math(source: &str) -> Node {
+        let mut options = markdown::ParseOptions::gfm();
+        options.constructs.math_text = true;
+        options.constructs.math_flow = true;
+        markdown::to_mdast(source, &options).unwrap()
+    }
+
+    fn count(node: &Node, is: fn(&Node) -> bool) -> usize {
+        usize::from(is(node))
+            + node
+                .children()
+                .into_iter()
+                .flatten()
+                .map(|child| count(child, is))
+                .sum::<usize>()
+    }
+
+    #[test]
+    fn bold_around_a_dollar_amount_survives() {
+        let source = "- **$36K** for a month. The old setup would cost $58K.\n";
+        let escaped = escape_prose_dollars(source);
+        assert_eq!(
+            escaped,
+            "- **\\$36K** for a month. The old setup would cost \\$58K.\n"
+        );
+        let root = parse_with_math(&escaped);
+        assert_eq!(count(&root, |n| matches!(n, Node::InlineMath(_))), 0);
+        assert_eq!(count(&root, |n| matches!(n, Node::Strong(_))), 1);
+    }
+
+    #[test]
+    fn leaves_code_escapes_and_block_math_alone() {
+        for source in [
+            "no dollars here",
+            "run `echo $HOME` and `$PATH`",
+            "```sh\necho $HOME $PATH\n```\n",
+            "already \\$5 and \\$10",
+            "$$\nx^2\n$$\n",
+            "[a link](https://example.com/$x$)",
+        ] {
+            assert_eq!(escape_prose_dollars(source), source, "{source:?}");
+        }
+    }
+
+    #[test]
+    fn escapes_dollars_in_tables_and_after_literal_backslashes() {
+        assert_eq!(
+            escape_prose_dollars("| a | $5 |\n|---|---|\n| b | $6 |\n"),
+            "| a | \\$5 |\n|---|---|\n| b | \\$6 |\n"
+        );
+        assert_eq!(escape_prose_dollars("a \\\\$5 b $6"), "a \\\\\\$5 b \\$6");
+    }
 }

@@ -3857,6 +3857,7 @@ dependencies = [
  "gpui-pre-platform",
  "ignore",
  "image",
+ "markdown",
  "me-ipc",
  "me-lsp",
  "me-project",
