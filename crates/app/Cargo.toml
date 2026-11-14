@@ -43,6 +43,8 @@ gpui-component = { workspace = true, features = [
 ] }
 gpui-kit-assets = "=0.8.0"
 gpui-base.workspace = true
+# Same parser gpui-base uses; see `escape_prose_dollars` in markdown.rs.
+markdown = "=1.0.0"
 merman.workspace = true
 
 anyhow.workspace = true
